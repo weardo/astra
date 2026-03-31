@@ -37,7 +37,9 @@ class TestOrchestratorInit:
         assert action["action"] == "dispatch_agent"
         assert action["role"] == "architect"
         assert action["model"] == "opus"
-        assert "Add user auth" in action["prompt"]
+        assert "prompt_file" in action
+        prompt_content = Path(action["prompt_file"]).read_text()
+        assert "Add user auth" in prompt_content
         assert "save_output_to" in action
 
     def test_init_with_plan_skips_planner(self, orch, tmp_path):
@@ -135,7 +137,8 @@ class TestOrchestratorGeneratorLoop:
         action = self._setup_generator_phase(orch)
         assert action["action"] == "dispatch_agent"
         assert action["role"] == "generator"
-        assert "t1" in action["prompt"] or "Create handler" in action["prompt"]
+        prompt_content = Path(action["prompt_file"]).read_text()
+        assert "t1" in prompt_content or "Create handler" in prompt_content
 
     def test_generator_pass_advances_to_next_task(self, orch):
         self._setup_generator_phase(orch)
@@ -171,6 +174,54 @@ class TestOrchestratorGeneratorLoop:
         action = orch.record_hitl(gate="post_plan", decision="abort")
         assert action["action"] == "complete"
         assert "abort" in action.get("reason", "").lower()
+
+
+class TestEvaluatorDispatch:
+    def _setup_with_evaluators(self, orch):
+        """Get orchestrator to generator phase with evaluators configured."""
+        orch._config["evaluators"] = ["test-runner", "code-reviewer"]
+        orch.init(prompt="test", detection={"stack": "typescript"})
+        work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
+            "stories": [{"id": "s1", "name": "S", "tasks": [
+                {"id": "t1", "description": "Create handler", "acceptance_criteria": ["ac"],
+                 "steps": [], "depends_on": [], "target_files": ["src/handler.ts"],
+                 "status": "pending", "attempts": 0, "blocked_reason": None},
+                {"id": "t2", "description": "Add tests", "acceptance_criteria": ["ac"],
+                 "steps": [], "depends_on": ["t1"], "target_files": ["tests/handler.test.ts"],
+                 "status": "pending", "attempts": 0, "blocked_reason": None},
+            ]}]}]}]}
+        orch.record(role="architect", output=json.dumps(work_plan))
+        orch.record(role="validator", output='{"valid": true}')
+        return orch.record_hitl(gate="post_plan", decision="continue")
+
+    def test_generator_pass_dispatches_test_runner(self, orch):
+        self._setup_with_evaluators(orch)
+        action = orch.record(role="generator", output="done", task_id="t1", verdict="PASS")
+        assert action["action"] == "dispatch_agent"
+        assert action["role"] == "test-runner"
+
+    def test_all_evaluators_pass_advances(self, orch):
+        self._setup_with_evaluators(orch)
+        orch.record(role="generator", output="done", task_id="t1", verdict="PASS")
+        orch.record(role="test-runner", output="10 passing", task_id="t1", verdict="PASS")
+        action = orch.record(role="code-reviewer", output="no issues", task_id="t1", verdict="PASS")
+        # All evaluators passed → advance to next task
+        assert action["action"] == "dispatch_agent"
+        assert action["role"] == "generator"
+
+    def test_evaluator_fail_writes_feedback_and_retries(self, orch):
+        self._setup_with_evaluators(orch)
+        orch.record(role="generator", output="done", task_id="t1", verdict="PASS")
+        action = orch.record(
+            role="test-runner", output="2 failing: TypeError in handler.ts",
+            task_id="t1", verdict="FAIL",
+        )
+        # First evaluator failed → skip remaining evaluators, write feedback, retry generator
+        assert action["action"] == "dispatch_agent"
+        assert action["role"] == "generator"
+        feedback_path = orch.run_dir / "feedback.md"
+        assert feedback_path.exists()
+        assert "test-runner" in feedback_path.read_text()
 
 
 class TestCombineVerdicts:
@@ -281,24 +332,28 @@ class TestScopedContext:
         action = orch.record_hitl(gate="post_plan", decision="continue")
 
         # The generator prompt should contain the repo map with app.ts
-        assert "app.ts" in action["prompt"]
+        prompt_content = Path(action["prompt_file"]).read_text()
+        assert "app.ts" in prompt_content
 
 
 class TestCircuitBreakerWiring:
-    def _setup_and_get_to_generator(self, orch):
+    def _setup_and_get_to_generator(self, orch, num_tasks=1):
         orch.init(prompt="test", detection={"stack": "typescript"})
+        tasks = [
+            {"id": f"t{i}", "description": f"Task {i}", "acceptance_criteria": ["ac"],
+             "steps": [], "depends_on": [], "target_files": [f"t{i}.ts"],
+             "status": "pending", "attempts": 0, "blocked_reason": None}
+            for i in range(1, num_tasks + 1)
+        ]
         work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
-            "stories": [{"id": "s1", "name": "S", "tasks": [
-                {"id": "t1", "description": "X", "acceptance_criteria": ["ac"],
-                 "steps": [], "depends_on": [], "target_files": ["x.ts"],
-                 "status": "pending", "attempts": 0, "blocked_reason": None}
-            ]}]}]}]}
+            "stories": [{"id": "s1", "name": "S", "tasks": tasks}]}]}]}
         orch.record(role="architect", output=json.dumps(work_plan))
         orch.record(role="validator", output='{"valid": true}')
         orch.record_hitl(gate="post_plan", decision="continue")
 
     def test_repeated_failures_trigger_circuit_break(self, orch):
         """After max retries on a task, it gets blocked."""
+        orch._config["circuit_breaker"] = {"no_progress_threshold": 10, "same_error_threshold": 10}
         self._setup_and_get_to_generator(orch)
         # Fail 3 times — should block the task
         orch.record(role="generator", output="fail", task_id="t1", verdict="FAIL")
@@ -307,12 +362,126 @@ class TestCircuitBreakerWiring:
         # After 3 failures, task is blocked, no more pending → complete
         assert action["action"] == "complete"
 
+    def test_circuit_breaker_opens_returns_hitl_gate(self, orch):
+        """CircuitBreaker opens after repeated no-progress iterations → HITL gate."""
+        orch._config["circuit_breaker"] = {"no_progress_threshold": 2}
+        self._setup_and_get_to_generator(orch, num_tasks=5)
+        # Generator FAIL records no-progress in circuit breaker
+        orch.record(role="generator", output="fail", task_id="t1", verdict="FAIL")
+        action = orch.record(role="generator", output="fail", task_id="t1", verdict="FAIL")
+        # Circuit breaker should open after 2 no-progress, returning HITL gate
+        assert action["action"] == "hitl_gate"
+        assert action["gate"] == "on_circuit_break"
+
+    def test_on_circuit_break_continue_resets(self, orch):
+        """Continuing from circuit break gate resets the breaker and continues."""
+        orch._config["circuit_breaker"] = {"no_progress_threshold": 2}
+        self._setup_and_get_to_generator(orch, num_tasks=5)
+        orch.record(role="generator", output="fail", task_id="t1", verdict="FAIL")
+        orch.record(role="generator", output="fail", task_id="t1", verdict="FAIL")
+        # Now continue past the circuit break
+        action = orch.record_hitl(gate="on_circuit_break", decision="continue")
+        assert action["action"] == "dispatch_agent"
+
+
+class TestBudgetTimeIterationChecks:
+    def _setup_generator(self, orch, num_tasks=3):
+        orch.init(prompt="test", detection={"stack": "typescript"})
+        tasks = [
+            {"id": f"t{i}", "description": f"Task {i}", "acceptance_criteria": ["ac"],
+             "steps": [], "depends_on": [], "target_files": [f"t{i}.ts"],
+             "status": "pending", "attempts": 0, "blocked_reason": None}
+            for i in range(1, num_tasks + 1)
+        ]
+        work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
+            "stories": [{"id": "s1", "name": "S", "tasks": tasks}]}]}]}
+        orch.record(role="architect", output=json.dumps(work_plan))
+        orch.record(role="validator", output='{"valid": true}')
+        orch.record_hitl(gate="post_plan", decision="continue")
+
+    def test_iteration_limit_triggers_hitl(self, orch):
+        orch._config["max_iterations"] = 2
+        self._setup_generator(orch)
+        orch.record(role="generator", output="done", task_id="t1", verdict="PASS")
+        action = orch.record(role="generator", output="done", task_id="t2", verdict="PASS")
+        # After 2 iterations, should hit budget_warning gate
+        assert action["action"] == "hitl_gate"
+        assert action["gate"] == "budget_warning"
+
+    def test_status_block_parsed(self, orch):
+        self._setup_generator(orch)
+        status = "---HARNESS_STATUS---\nSTATUS: COMPLETE\nFEATURES_COMPLETED_THIS_SESSION: 2\nFEATURES_REMAINING: 1\n---END_HARNESS_STATUS---"
+        orch.record(role="generator", output=status, task_id="t1", verdict="PASS")
+        # Check that status was parsed and stored in events
+        events = orch._store.replay()
+        status_events = [e for e in events if e.get("type") == "status_block_parsed"]
+        assert len(status_events) == 1
+        assert status_events[0]["data"]["FEATURES_COMPLETED_THIS_SESSION"] == 2
+
+    def test_time_limit_check(self, orch):
+        orch._config["max_duration_minutes"] = 1  # 1 minute limit
+        self._setup_generator(orch)
+        # Force start_time to be 2 minutes in the past (exceeds 1min limit)
+        orch._start_time = time.time() - 120
+        action = orch.record(role="generator", output="done", task_id="t1", verdict="PASS")
+        assert action["action"] == "hitl_gate"
+        assert action["gate"] == "budget_warning"
+
 
 class TestCheckpoint:
     def test_checkpoint_config(self, orch):
         """Checkpoint threshold is configurable."""
         orch._config["checkpoint_every_n_tasks"] = 3
         assert orch._config.get("checkpoint_every_n_tasks") == 3
+
+    def test_checkpoint_after_n_tasks(self, orch):
+        """Checkpoint fires after completing N tasks in one session."""
+        orch._config["checkpoint_every_n_tasks"] = 2
+        orch.init(prompt="test", detection={"stack": "typescript"})
+        tasks = [
+            {"id": f"t{i}", "description": f"Task {i}", "acceptance_criteria": ["ac"],
+             "steps": [], "depends_on": [], "target_files": [f"t{i}.ts"],
+             "status": "pending", "attempts": 0, "blocked_reason": None}
+            for i in range(1, 6)
+        ]
+        work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
+            "stories": [{"id": "s1", "name": "S", "tasks": tasks}]}]}]}
+        orch.record(role="architect", output=json.dumps(work_plan))
+        orch.record(role="validator", output='{"valid": true}')
+        orch.record_hitl(gate="post_plan", decision="continue")
+        # Complete 2 tasks → should checkpoint
+        orch.record(role="generator", output="done", task_id="t1", verdict="PASS")
+        action = orch.record(role="generator", output="done", task_id="t2", verdict="PASS")
+        assert action["action"] == "checkpoint"
+        assert "summary" in action
+
+    def test_resume_after_checkpoint_continues(self, orch):
+        """After checkpoint, resume picks up where we left off."""
+        orch._config["checkpoint_every_n_tasks"] = 2
+        orch.init(prompt="test", detection={"stack": "typescript"})
+        tasks = [
+            {"id": f"t{i}", "description": f"Task {i}", "acceptance_criteria": ["ac"],
+             "steps": [], "depends_on": [], "target_files": [f"t{i}.ts"],
+             "status": "pending", "attempts": 0, "blocked_reason": None}
+            for i in range(1, 6)
+        ]
+        work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
+            "stories": [{"id": "s1", "name": "S", "tasks": tasks}]}]}]}
+        orch.record(role="architect", output=json.dumps(work_plan))
+        orch.record(role="validator", output='{"valid": true}')
+        orch.record_hitl(gate="post_plan", decision="continue")
+        orch.record(role="generator", output="done", task_id="t1", verdict="PASS")
+        orch.record(role="generator", output="done", task_id="t2", verdict="PASS")
+        # Checkpoint returned → resume
+        run_dir = orch.run_dir
+        orch2 = Orchestrator(
+            data_dir=orch._data_dir, config=orch._config,
+            prompts_dir=orch._prompts_dir, references_dir=orch._references_dir,
+        )
+        action = orch2.resume(run_dir=run_dir)
+        # Should dispatch generator for next pending task
+        assert action["action"] == "dispatch_agent"
+        assert action["role"] == "generator"
 
 
 class TestScopeDrift:
@@ -358,6 +527,66 @@ class TestOrchestratorStateRecovery:
         action = orch2.resume(run_dir=run_dir)
         # Should know we're in planner phase, waiting for architect output
         assert action is not None
+
+
+class TestPromptFileDispatch:
+    def test_planner_action_has_prompt_file(self, orch):
+        action = orch.init(prompt="Add auth", detection={"stack": "typescript"})
+        assert "prompt_file" in action
+        assert action["prompt_file"].endswith(".md")
+
+    def test_generator_action_has_prompt_file(self, orch):
+        orch.init(prompt="test", detection={"stack": "typescript"})
+        work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
+            "stories": [{"id": "s1", "name": "S", "tasks": [
+                {"id": "t1", "description": "Do X", "acceptance_criteria": ["ac"],
+                 "steps": [], "depends_on": [], "target_files": ["src/x.ts"],
+                 "status": "pending", "attempts": 0, "blocked_reason": None}
+            ]}]}]}]}
+        orch.record(role="architect", output=json.dumps(work_plan))
+        orch.record(role="validator", output='{"valid": true}')
+        action = orch.record_hitl(gate="post_plan", decision="continue")
+        assert action["role"] == "generator"
+        assert "prompt_file" in action
+        assert "generator_t1" in action["prompt_file"]
+
+    def test_prompt_file_exists_on_disk(self, orch):
+        action = orch.init(prompt="Add auth", detection={"stack": "typescript"})
+        prompt_file = Path(action["prompt_file"])
+        assert prompt_file.exists()
+        content = prompt_file.read_text()
+        assert len(content) > 0
+
+
+class TestSpecCompliance:
+    def test_bugfix_strategy_sequence(self, orch):
+        """Bugfix strategy produces investigator → bugfix-adversary → fixer → verifier."""
+        orch._config["strategy"] = "bugfix"
+        action = orch.init(prompt="Fix crash on login", detection={"stack": "typescript"})
+        assert action["role"] == "investigator"
+
+    def test_per_role_model_override(self, orch):
+        """Per-role model override in config takes precedence."""
+        orch._config["role_models"] = {"architect": "haiku"}
+        action = orch.init(prompt="test", detection={"stack": "typescript"})
+        assert action["role"] == "architect"
+        assert action["model"] == "haiku"
+
+    def test_headless_skips_hitl(self, orch, monkeypatch):
+        """In headless mode, HITL gates are skipped."""
+        monkeypatch.setenv("ASTRA_HEADLESS", "1")
+        orch.init(prompt="test", detection={"stack": "typescript"})
+        work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
+            "stories": [{"id": "s1", "name": "S", "tasks": [
+                {"id": "t1", "description": "Do X", "acceptance_criteria": ["ac"],
+                 "steps": [], "depends_on": [], "target_files": ["src/x.ts"],
+                 "status": "pending", "attempts": 0, "blocked_reason": None}
+            ]}]}]}]}
+        orch.record(role="architect", output=json.dumps(work_plan))
+        action = orch.record(role="validator", output='{"valid": true}')
+        # Should skip post_plan HITL gate and go straight to generator
+        assert action["action"] == "dispatch_agent"
+        assert action["role"] == "generator"
 
 
 class TestOrchestratorCLI:

@@ -19,11 +19,17 @@ Usage:
 
 import json
 import logging
+import os
+import time
 from pathlib import Path
 from typing import Optional
 
+from .circuit_breaker import CircuitBreaker, hash_error
+from .completion import check_exit_conditions
+from .discovery import format_for_prompt as format_discoveries
 from .event_store import EventStore
 from .planner import build_role_prompt, get_role_sequence, resolve_model
+from .progress import parse_status_block
 from .repo_map import generate_lightweight_map
 from .runs import RunManager
 from .work_plan import WorkPlan
@@ -54,6 +60,18 @@ class Orchestrator:
         self._planner_index: int = 0
         self._detection: dict = {}
         self._prompt: str = ""
+        # Evaluator state
+        self._current_task_evaluators: list = []
+        self._current_task_verdicts: list = []
+        self._current_task_id_for_eval: Optional[str] = None
+        # Circuit breaker (initialized when run_dir is set)
+        self._circuit_breaker: Optional[CircuitBreaker] = None
+        # Budget/time/iteration tracking
+        self._start_time: float = 0.0
+        self._iteration_count: int = 0
+        # Checkpoint (per-session, not persisted)
+        self._tasks_completed_this_session: int = 0
+        self._headless: Optional[bool] = None  # Resolved lazily
 
     def init(
         self,
@@ -66,6 +84,11 @@ class Orchestrator:
         strategy = self._config.get("strategy", "feature")
         self.run_dir = self._run_manager.create_run(strategy)
         self._store = EventStore(self.run_dir)
+        self._circuit_breaker = CircuitBreaker(
+            self.run_dir, self._config.get("circuit_breaker", {}),
+        )
+        self._start_time = time.time()
+        self._iteration_count = 0
         self._detection = detection or {}
         self._prompt = prompt
 
@@ -89,6 +112,7 @@ class Orchestrator:
         self._planner_sequence = get_role_sequence(
             input_mode, task_count=10,  # estimate, adjusted after architect
             thresholds=self._config.get("pipeline_depth"),
+            strategy=strategy,
         )
         self._planner_index = 0
         return self._dispatch_next_planner_role()
@@ -114,6 +138,10 @@ class Orchestrator:
         if role == "generator":
             return self._handle_generator_output(task_id, verdict, output)
 
+        # Evaluator phase
+        if role in ("test-runner", "code-reviewer", "browser-tester", "spec-reviewer"):
+            return self._handle_evaluator_output(task_id, role, verdict, output)
+
         return {"action": "error", "message": f"Unknown role: {role}"}
 
     def record_hitl(self, gate: str, decision: str, instructions: str = "") -> dict:
@@ -130,12 +158,24 @@ class Orchestrator:
         if gate == "post_plan":
             return self._start_generator_loop()
 
+        if gate == "on_circuit_break":
+            if self._circuit_breaker:
+                self._circuit_breaker.reset()
+            return self._dispatch_next_task()
+
+        if gate == "budget_warning":
+            return self._dispatch_next_task()
+
         return {"action": "error", "message": f"Unknown gate: {gate}"}
 
     def resume(self, run_dir: Path) -> dict:
         """Resume a previous run from its event log."""
         self.run_dir = Path(run_dir)
         self._store = EventStore(self.run_dir)
+        self._circuit_breaker = CircuitBreaker(
+            self.run_dir, self._config.get("circuit_breaker", {}),
+        )
+        self._start_time = time.time()
         state = self._store.materialize_state()
 
         # Load work plan if it exists
@@ -173,11 +213,16 @@ class Orchestrator:
         ext = ".json" if role in ("architect", "refiner", "fixer") else ".md"
         save_path = str(self.run_dir / f"{role}_output{ext}")
 
+        # Write prompt to file for executor dispatch
+        prompt_file = self.run_dir / f"prompt_{role}.md"
+        prompt_file.write_text(prompt)
+
         return {
             "action": "dispatch_agent",
             "role": role,
             "model": model,
-            "prompt": prompt,
+            "prompt": prompt[:200],
+            "prompt_file": str(prompt_file),
             "save_output_to": save_path,
         }
 
@@ -195,6 +240,7 @@ class Orchestrator:
             self._planner_sequence = get_role_sequence(
                 input_mode, task_count=task_count,
                 thresholds=self._config.get("pipeline_depth"),
+                strategy=self._config.get("strategy", "feature"),
             )
             self._planner_index = 1  # Skip architect (already done)
 
@@ -267,11 +313,16 @@ class Orchestrator:
         )
         model = resolve_model("generator", self._config)
 
+        # Write prompt to file for executor dispatch
+        prompt_file = self.run_dir / f"prompt_generator_{task['id']}.md"
+        prompt_file.write_text(prompt)
+
         return {
             "action": "dispatch_agent",
             "role": "generator",
             "model": model,
-            "prompt": prompt,
+            "prompt": prompt[:200],
+            "prompt_file": str(prompt_file),
             "save_output_to": str(self.run_dir / f"generator_{task['id']}.md"),
             "task_id": task["id"],
         }
@@ -279,14 +330,59 @@ class Orchestrator:
     def _handle_generator_output(
         self, task_id: Optional[str], verdict: Optional[str], output: str
     ) -> dict:
+        # Parse status block from output
+        status = parse_status_block(output)
+        if status:
+            self._store.append({
+                "type": "status_block_parsed",
+                "data": status,
+            })
+
+        # Increment iteration count
+        self._iteration_count += 1
+
         if task_id and verdict == "PASS":
+            # Record progress in circuit breaker
+            if self._circuit_breaker:
+                self._circuit_breaker.record_iteration(
+                    progress=True, output_length=len(output),
+                )
+
+            # Check if evaluators are configured
+            evaluators = self._config.get("evaluators", [])
+            if evaluators:
+                self._current_task_evaluators = list(evaluators)
+                self._current_task_verdicts = []
+                self._current_task_id_for_eval = task_id
+                return self._dispatch_next_evaluator()
+
             wp_path = self.run_dir / "work_plan.json"
+            task = self._work_plan.get_task(task_id)
             self._work_plan.mark_task_done(task_id, wp_path)
+            self._tasks_completed_this_session += 1
             self._store.append({
                 "type": "task_completed",
                 "data": {"task_id": task_id, "verdict": "PASS"},
             })
+            # Scope drift detection
+            if task:
+                drift = self._detect_scope_drift_static(self.run_dir, task)
+                if drift:
+                    self._store.append({
+                        "type": "scope_drift_detected",
+                        "data": {"task_id": task_id, "undeclared_files": drift},
+                    })
         elif task_id and verdict == "FAIL":
+            # Record no-progress in circuit breaker
+            if self._circuit_breaker:
+                cb_state = self._circuit_breaker.record_iteration(
+                    progress=False,
+                    error_hash=hash_error(output) if output else None,
+                    output_length=len(output),
+                )
+                if cb_state == CircuitBreaker.OPEN:
+                    return self._present_hitl_gate("on_circuit_break")
+
             wp_path = self.run_dir / "work_plan.json"
             attempts = self._work_plan.increment_task_attempts(task_id, wp_path)
             if attempts >= 3:
@@ -303,6 +399,127 @@ class Orchestrator:
                 # Re-dispatch same task with feedback
                 return self._dispatch_next_task()
 
+        # Checkpoint check (per-session task count)
+        checkpoint_threshold = self._config.get("checkpoint_every_n_tasks", 0)
+        if checkpoint_threshold > 0 and self._tasks_completed_this_session >= checkpoint_threshold:
+            return {
+                "action": "checkpoint",
+                "summary": self._work_plan.count_tasks() if self._work_plan else {},
+            }
+
+        # Check exit conditions (budget/time/iteration limits)
+        exit_check = self._check_exit_conditions()
+        if exit_check:
+            return exit_check
+
+        return self._dispatch_next_task()
+
+    def _check_exit_conditions(self) -> Optional[dict]:
+        """Check budget, time, and iteration limits."""
+        elapsed = time.time() - self._start_time
+        state_dict = {
+            "iteration": self._iteration_count,
+            "total_cost_usd": 0,  # Cost tracking not yet wired
+        }
+        result = check_exit_conditions(state_dict, self._config, elapsed)
+        if result and result.get("should_exit"):
+            return self._present_hitl_gate("budget_warning")
+
+    # -------------------------------------------------------------------------
+    # Evaluator loop
+    # -------------------------------------------------------------------------
+
+    def _dispatch_next_evaluator(self) -> dict:
+        if not self._current_task_evaluators:
+            return self._finalize_evaluators()
+
+        role = self._current_task_evaluators.pop(0)
+        model = resolve_model(role, self._config)
+
+        # Build evaluator prompt from template if available, else minimal
+        task = self._work_plan.get_task(self._current_task_id_for_eval)
+        replacements = {
+            "{{DETECTION_JSON}}": json.dumps(self._detection, indent=2),
+            "{{CURRENT_TASK}}": json.dumps(task, indent=2) if task else "{}",
+            "{{RUN_DIR}}": str(self.run_dir),
+            "{{TEST_COMMAND}}": self._detection.get("test_command", "npm test"),
+        }
+        # Use role-specific template if it exists, fall back to generic evaluator
+        template_role = role if (self._prompts_dir / f"{role}.md").exists() else "evaluator"
+        replacements["{{EVALUATOR_ROLE}}"] = role
+        prompt = build_role_prompt(
+            template_role, self._prompts_dir, replacements,
+            references_dir=self._references_dir,
+        )
+
+        prompt_file = self.run_dir / f"prompt_{role}_{self._current_task_id_for_eval}.md"
+        prompt_file.write_text(prompt)
+
+        return {
+            "action": "dispatch_agent",
+            "role": role,
+            "model": model,
+            "prompt": prompt[:200],
+            "prompt_file": str(prompt_file),
+            "save_output_to": str(self.run_dir / f"{role}_{self._current_task_id_for_eval}.md"),
+            "task_id": self._current_task_id_for_eval,
+        }
+
+    def _handle_evaluator_output(
+        self, task_id: Optional[str], role: str, verdict: Optional[str], output: str
+    ) -> dict:
+        self._current_task_verdicts.append({
+            "agent": role,
+            "verdict": verdict or "PASS",
+            "details": output[:500],
+        })
+
+        # Early exit on FAIL — skip remaining evaluators
+        if verdict == "FAIL":
+            self._current_task_evaluators.clear()
+            return self._finalize_evaluators()
+
+        # More evaluators remaining
+        if self._current_task_evaluators:
+            return self._dispatch_next_evaluator()
+
+        return self._finalize_evaluators()
+
+    def _finalize_evaluators(self) -> dict:
+        """Combine verdicts and either advance or retry."""
+        task_id = self._current_task_id_for_eval
+        combined = self.combine_verdicts(self._current_task_verdicts)
+
+        if combined["verdict"] == "PASS":
+            wp_path = self.run_dir / "work_plan.json"
+            self._work_plan.mark_task_done(task_id, wp_path)
+            self._tasks_completed_this_session += 1
+            self._store.append({
+                "type": "task_completed",
+                "data": {"task_id": task_id, "verdict": "PASS"},
+            })
+
+            # Checkpoint check
+            checkpoint_threshold = self._config.get("checkpoint_every_n_tasks", 0)
+            if checkpoint_threshold > 0 and self._tasks_completed_this_session >= checkpoint_threshold:
+                return {
+                    "action": "checkpoint",
+                    "summary": self._work_plan.count_tasks() if self._work_plan else {},
+                }
+
+            return self._dispatch_next_task()
+
+        # FAIL — write feedback and retry
+        feedback_path = self.run_dir / "feedback.md"
+        feedback_lines = [f"# Evaluator Feedback for {task_id}\n"]
+        for reason in combined["reasons"]:
+            feedback_lines.append(f"- {reason}\n")
+        feedback_path.write_text("\n".join(feedback_lines))
+
+        self._store.append({
+            "type": "task_retry",
+            "data": {"task_id": task_id, "reason": "evaluator_fail"},
+        })
         return self._dispatch_next_task()
 
     def _load_plan_and_start_generator(self, plan_path: str) -> dict:
@@ -376,7 +593,16 @@ class Orchestrator:
     # HITL
     # -------------------------------------------------------------------------
 
+    @property
+    def _is_headless(self) -> bool:
+        if self._headless is not None:
+            return self._headless
+        return bool(os.environ.get("CI") or os.environ.get("ASTRA_HEADLESS"))
+
     def _present_hitl_gate(self, gate: str) -> dict:
+        if self._is_headless:
+            logger.info("Headless mode: auto-continuing past gate %s", gate)
+            return self.record_hitl(gate=gate, decision="continue")
         context = {}
         if self._work_plan:
             context["task_count"] = self._work_plan.count_tasks()["total"]
@@ -443,6 +669,7 @@ class Orchestrator:
             "{{TEST_COMMAND}}": self._detection.get("test_command", "npm test"),
             "{{TASK_DESCRIPTION}}": task.get("description", ""),
             "{{RUN_DIR}}": str(self.run_dir),
+            "{{DISCOVERIES}}": format_discoveries(self.run_dir),
         }
 
     def _load_feedback(self) -> str:

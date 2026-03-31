@@ -87,6 +87,7 @@ def get_role_sequence(
     input_mode: str,
     task_count: int = 0,
     thresholds: Optional[dict] = None,
+    strategy: str = "feature",
 ) -> list:
     """Determine the planner role sequence based on input mode and task count.
 
@@ -94,12 +95,16 @@ def get_role_sequence(
         input_mode: "prompt", "spec", or "plan"
         task_count: Number of tasks (for adaptive depth)
         thresholds: Override depth thresholds
+        strategy: "feature" (default) or "bugfix"
 
     Returns:
         List of role names to execute in order.
     """
     if input_mode == "plan":
         return []
+
+    if strategy == "bugfix":
+        return ["investigator", "bugfix-adversary", "fixer", "verifier"]
 
     thresholds = thresholds or DEFAULT_THRESHOLDS
     light_max = thresholds.get("light_max_tasks", 5)
@@ -116,9 +121,15 @@ def get_role_sequence(
 def resolve_model(role: str, config: dict) -> str:
     """Resolve the model to use for a given role.
 
-    Maps role to agent type (planner/generator/evaluator),
-    then looks up the model in config.model_routing.
+    Checks role_models first for per-role override,
+    then maps role to agent type (planner/generator/evaluator)
+    and looks up the model in config.model_routing.
     """
+    # Per-role override takes precedence
+    role_models = config.get("role_models", {})
+    if role in role_models:
+        return role_models[role]
+
     agent_type = ROLE_AGENT_TYPE.get(role, "generator")
     routing = config.get("model_routing", {})
     return routing.get(agent_type, "sonnet")

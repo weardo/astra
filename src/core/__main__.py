@@ -16,6 +16,7 @@ import argparse
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 
 from .config import load_config
@@ -45,6 +46,11 @@ def _save_state(data_dir: Path, orch: Orchestrator) -> None:
         "prompt": orch._prompt,
         "planner_sequence": orch._planner_sequence,
         "planner_index": orch._planner_index,
+        "current_task_evaluators": orch._current_task_evaluators,
+        "current_task_verdicts": orch._current_task_verdicts,
+        "current_task_id_for_eval": orch._current_task_id_for_eval,
+        "iteration_count": orch._iteration_count,
+        "start_time": orch._start_time,
     }
     state_path = data_dir / STATE_FILE
     state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -67,6 +73,11 @@ def _load_state(data_dir: Path, orch: Orchestrator) -> None:
     orch._prompt = state.get("prompt", "")
     orch._planner_sequence = state.get("planner_sequence", [])
     orch._planner_index = state.get("planner_index", 0)
+    orch._current_task_evaluators = state.get("current_task_evaluators", [])
+    orch._current_task_verdicts = state.get("current_task_verdicts", [])
+    orch._current_task_id_for_eval = state.get("current_task_id_for_eval")
+    orch._iteration_count = state.get("iteration_count", 0)
+    orch._start_time = state.get("start_time", time.time())
 
     # Reload work plan if it exists
     if orch.run_dir:

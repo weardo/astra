@@ -40,8 +40,8 @@ Repeat until `action` is `complete` or `error`:
 
 ### If action is `dispatch_agent`
 
-1. Read `action.prompt`, `action.model`, `action.role` from the JSON
-2. Dispatch: `Agent(prompt=action.prompt, model=action.model)`
+1. Read `action.prompt_file`, `action.model`, `action.role` from the JSON
+2. Dispatch: `Agent(prompt="Read and execute all instructions in {action.prompt_file}", model=action.model)`
 3. Save agent output to `action.save_output_to`
 4. Get next action:
 ```bash
