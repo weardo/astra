@@ -210,7 +210,7 @@ class Orchestrator:
         )
         model = resolve_model(role, self._config)
         # Architect/refiner produce JSON work plans, others produce markdown
-        ext = ".json" if role in ("architect", "refiner", "fixer") else ".md"
+        ext = ".json" if role in ("architect", "adversary", "refiner", "validator", "fixer", "verifier") else ".md"
         save_path = str(self.run_dir / f"{role}_output{ext}")
 
         # Write prompt to file for executor dispatch
@@ -655,9 +655,11 @@ class Orchestrator:
         if role in ("adversary", "refiner"):
             # Load previous output
             for prev_role in ("architect", "adversary"):
-                prev_path = self.run_dir / f"{prev_role}_output.md"
-                if prev_path.exists():
-                    replacements[f"{{{{{prev_role.upper()}_OUTPUT}}}}"] = prev_path.read_text()
+                for ext in (".json", ".md"):
+                    prev_path = self.run_dir / f"{prev_role}_output{ext}"
+                    if prev_path.exists():
+                        replacements[f"{{{{{prev_role.upper()}_OUTPUT}}}}"] = prev_path.read_text()
+                        break
         return replacements
 
     def _build_generator_replacements(self, task: dict) -> dict:
