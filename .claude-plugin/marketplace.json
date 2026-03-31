@@ -9,10 +9,12 @@
     {
       "name": "astra",
       "description": "Adversarial planning, hook-enforced quality, event-sourced state, parallel execution, and PR lifecycle for Claude Code.",
-      "source": ".",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/weardo/astra.git"
+      },
       "category": "development",
-      "version": "0.1.0",
-      "tags": ["harness", "planning", "tdd", "parallel", "orchestrator"]
+      "homepage": "https://github.com/weardo/astra"
     }
   ]
 }
