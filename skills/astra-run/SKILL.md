@@ -41,7 +41,10 @@ Repeat until `action` is `complete` or `error`:
 ### If action is `dispatch_agent`
 
 1. Read `action.prompt_file`, `action.model`, `action.role` from the JSON
-2. Dispatch: `Agent(prompt="Read and execute all instructions in {action.prompt_file}", model=action.model)`
+2. Dispatch a **general-purpose** Agent — do NOT use any specialized agent type (no feature-dev, no code-architect, no code-reviewer agents). The prompt file contains all instructions the agent needs:
+   ```
+   Agent(prompt="Read and follow all instructions in {action.prompt_file}", model=action.model, subagent_type="general-purpose")
+   ```
 3. Save agent output to `action.save_output_to`
 4. Get next action:
 ```bash
@@ -81,6 +84,7 @@ Output `action.message`. Stop.
 ## Rules
 
 - NEVER make flow decisions — the orchestrator decides
+- NEVER use specialized agent types (feature-dev, code-architect, code-reviewer, etc.) — ALWAYS use general-purpose agents. The prompt file already contains the role's full instructions.
 - ALWAYS save agent output to the path specified by the orchestrator
 - ALWAYS pass the full agent output to `record()`
 - If the orchestrator says `dispatch_agent`, dispatch the agent
