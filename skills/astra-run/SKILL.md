@@ -18,84 +18,65 @@ All decisions are made by the Python orchestrator. This skill is a thin executor
 
 2. Load detection (or run detect if missing):
 ```bash
-DETECTION=$(cat ${PROJECT_DIR}/.claude/detection.json 2>/dev/null || bash ${CLAUDE_PLUGIN_ROOT}/src/scripts/detect.sh .)
+DETECTION=$(cat .claude/detection.json 2>/dev/null || echo '{}')
 ```
 
-3. Initialize the orchestrator:
+3. Initialize the orchestrator and get the first action:
 ```bash
-ACTION=$(python3 -c "
-import json, sys
-sys.path.insert(0, '${CLAUDE_PLUGIN_ROOT}')
-from src.core.orchestrator import Orchestrator
-from src.core.config import load_config
-
-config = load_config('${PROJECT_DIR}/astra.yaml')
-orch = Orchestrator(
-    data_dir='${PROJECT_DIR}/.astra',
-    config=config,
-    prompts_dir='${CLAUDE_PLUGIN_ROOT}/src/prompts',
-    references_dir='${CLAUDE_PLUGIN_ROOT}/references',
-)
-orch.project_dir = '${PROJECT_DIR}'
-action = orch.init(
-    prompt='${PROMPT}',
-    detection=json.loads('${DETECTION}'),
-    plan_path='${PLAN_PATH}' if '${PLAN_PATH}' else None,
-)
-print(json.dumps(action))
-")
+PYTHONPATH=${CLAUDE_PLUGIN_ROOT} python3 -m src.core init \
+  --data-dir .astra \
+  --project-dir . \
+  --prompt "${PROMPT}" \
+  --detection "${DETECTION}" \
+  --plan "${PLAN_PATH}" \
+  --spec "${SPEC_PATH}"
 ```
+
+This outputs a JSON action. Parse it.
 
 ## Executor Loop
 
-Repeat until `action.action` is `complete` or `error`:
+Repeat until `action` is `complete` or `error`:
 
-### dispatch_agent
-```
-Read action.prompt, action.model, action.role from the JSON.
-Call: Agent(prompt=action.prompt, model=action.model)
-Save agent output to action.save_output_to
-Then call orchestrator.record(role, output) to get next action.
-```
+### If action is `dispatch_agent`
 
-### hitl_gate
-```
-Present action.context to the user.
-Ask: continue / abort / modify?
-Call orchestrator.record_hitl(gate, decision) to get next action.
-```
-
-### checkpoint
-```
-Output action.summary.
-Exit cleanly. User runs /astra-resume to continue.
-```
-
-### complete
-```
-Output action.summary.
-Done.
-```
-
-### error
-```
-Output action.message.
-Stop.
-```
-
-## Recording Results
-
-After each agent dispatch, record the result:
+1. Read `action.prompt`, `action.model`, `action.role` from the JSON
+2. Dispatch: `Agent(prompt=action.prompt, model=action.model)`
+3. Save agent output to `action.save_output_to`
+4. Get next action:
 ```bash
-ACTION=$(python3 -c "
-import json, sys
-sys.path.insert(0, '${CLAUDE_PLUGIN_ROOT}')
-from src.core.orchestrator import Orchestrator
-# ... reconstruct orchestrator from run_dir ...
-action = orch.record(role='${ROLE}', output='''${OUTPUT}''', task_id='${TASK_ID}', verdict='${VERDICT}')
-print(json.dumps(action))
-")
+PYTHONPATH=${CLAUDE_PLUGIN_ROOT} python3 -m src.core record \
+  --data-dir .astra \
+  --role "${ROLE}" \
+  --output "${OUTPUT}" \
+  --task-id "${TASK_ID}" \
+  --verdict "${VERDICT}"
 ```
+
+### If action is `hitl_gate`
+
+1. Present `action.context` to the user
+2. Ask: **continue** / **abort** / **modify**?
+3. Get next action:
+```bash
+PYTHONPATH=${CLAUDE_PLUGIN_ROOT} python3 -m src.core record-hitl \
+  --data-dir .astra \
+  --gate "${GATE}" \
+  --decision "${DECISION}" \
+  --instructions "${INSTRUCTIONS}"
+```
+
+### If action is `checkpoint`
+
+Output `action.summary`. Exit cleanly. User runs `/astra-resume` to continue.
+
+### If action is `complete`
+
+Output `action.summary`. Done.
+
+### If action is `error`
+
+Output `action.message`. Stop.
 
 ## Rules
 
