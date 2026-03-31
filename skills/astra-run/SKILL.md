@@ -1,98 +1,107 @@
 ---
 name: astra-run
-description: "Use when starting a feature or bugfix implementation run. Orchestrates planning (architect → adversary → refiner → validator), then generator/evaluator loop with circuit breaker, scope drift detection, and HITL gates. Do NOT use for project setup — use /astra-init instead."
+description: "Use when starting a feature or bugfix implementation run. Orchestrates planning, then generator/evaluator loop with circuit breaker and HITL gates. Do NOT use for project setup — use /astra-init instead."
 user-invokable: true
 argument-hint: "[prompt | --spec path | --plan path]"
 ---
 
-# /astra-run — Feature/Bugfix Implementation
+# /astra-run — Executor Loop
 
-Orchestrate a full implementation run: planning → generation → evaluation → (optional) PR.
+All decisions are made by the Python orchestrator. This skill is a thin executor.
 
-## Input
+## Setup
 
-- `$ARGUMENTS` — one of:
-  - A natural language prompt (e.g., "Add user authentication")
-  - `--spec path/to/spec.md` — skip to planning from an existing spec
-  - `--plan path/to/work_plan.json` — skip planning, start generation
+1. Parse `$ARGUMENTS`:
+   - Plain text → `PROMPT=$ARGUMENTS`
+   - `--spec path` → `SPEC_PATH=path`
+   - `--plan path` → `PLAN_PATH=path`
 
-## Section 1: Input Resolution
+2. Load detection (or run detect if missing):
+```bash
+DETECTION=$(cat ${PROJECT_DIR}/.claude/detection.json 2>/dev/null || bash ${CLAUDE_PLUGIN_ROOT}/src/scripts/detect.sh .)
+```
 
-1. Parse `$ARGUMENTS` to determine input mode: `prompt`, `spec`, or `plan`
-2. Load `astra.yaml` (or auto-generate from detection if missing)
-3. Create run directory via `RunManager.create_run(strategy)`
-4. Write sentinel file `.astra-active-run` pointing to run directory
-5. Append `run_started` event to `events.jsonl`
-
-```python
-from src.core.runs import RunManager
-from src.core.event_store import EventStore
+3. Initialize the orchestrator:
+```bash
+ACTION=$(python3 -c "
+import json, sys
+sys.path.insert(0, '${CLAUDE_PLUGIN_ROOT}')
+from src.core.orchestrator import Orchestrator
 from src.core.config import load_config
-```
 
-## Section 2: Planner Pipeline
-
-### Step 1: Load Context
-- Read `detection.json` (from `/astra-init` or re-detect)
-- Generate lightweight repo map
-- Read `insights.json` if available
-
-### Step 2: Input Mode Branching
-- **prompt mode**: Full pipeline (architect → adversary → refiner → validator)
-- **spec mode**: Architect reads spec as input, then adversary → refiner → validator
-- **plan mode**: Skip entire planner pipeline, load work_plan.json directly
-
-### Step 3: Dispatch Planner Roles
-
-For each role in the pipeline, dispatch as an Agent call:
-
-```
-Agent(
-    prompt=build_role_prompt(role, prompts_dir, replacements),
-    model=resolve_model(role, config),
+config = load_config('${PROJECT_DIR}/astra.yaml')
+orch = Orchestrator(
+    data_dir='${PROJECT_DIR}/.astra',
+    config=config,
+    prompts_dir='${CLAUDE_PLUGIN_ROOT}/src/prompts',
+    references_dir='${CLAUDE_PLUGIN_ROOT}/references',
 )
+orch.project_dir = '${PROJECT_DIR}'
+action = orch.init(
+    prompt='${PROMPT}',
+    detection=json.loads('${DETECTION}'),
+    plan_path='${PLAN_PATH}' if '${PLAN_PATH}' else None,
+)
+print(json.dumps(action))
+")
 ```
 
-### Step 4: Adaptive Depth
+## Executor Loop
 
-Count tasks in the work plan to determine pipeline depth:
-- **Light** (≤5 tasks): architect → validator (skip adversary/refiner)
-- **Standard** (6-19 tasks): architect → adversary → refiner → validator
-- **Full** (≥20 tasks): architect → adversary → refiner → adversary → refiner → validator
+Repeat until `action.action` is `complete` or `error`:
 
-### Step 5: Auto-Fix Dependencies
-
-After each planner role writes the work plan, the `auto_fix_deps.sh` hook fires automatically to chain tasks sharing `target_files`.
-
-### Step 6: HITL Gate — post_plan
-
-Present the work plan summary to the user for confirmation.
-- **continue**: proceed to generator loop
-- **modify**: apply user instructions, re-run refiner
-- **abort**: clean up and exit
-
-```python
-from src.core.hitl import hitl_gate
+### dispatch_agent
+```
+Read action.prompt, action.model, action.role from the JSON.
+Call: Agent(prompt=action.prompt, model=action.model)
+Save agent output to action.save_output_to
+Then call orchestrator.record(role, output) to get next action.
 ```
 
-## Section 3: Generator/Evaluator Loop
+### hitl_gate
+```
+Present action.context to the user.
+Ask: continue / abort / modify?
+Call orchestrator.record_hitl(gate, decision) to get next action.
+```
 
-[PLACEHOLDER — completed in Session 4.1]
+### checkpoint
+```
+Output action.summary.
+Exit cleanly. User runs /astra-resume to continue.
+```
 
-## Section 4: PR Lifecycle
+### complete
+```
+Output action.summary.
+Done.
+```
 
-[PLACEHOLDER — completed in Session 7.1]
+### error
+```
+Output action.message.
+Stop.
+```
 
-## Completion
+## Recording Results
 
-1. Delete sentinel file `.astra-active-run`
-2. Append `run_completed` event
-3. Output final summary: tasks done, costs, duration
+After each agent dispatch, record the result:
+```bash
+ACTION=$(python3 -c "
+import json, sys
+sys.path.insert(0, '${CLAUDE_PLUGIN_ROOT}')
+from src.core.orchestrator import Orchestrator
+# ... reconstruct orchestrator from run_dir ...
+action = orch.record(role='${ROLE}', output='''${OUTPUT}''', task_id='${TASK_ID}', verdict='${VERDICT}')
+print(json.dumps(action))
+")
+```
 
 ## Rules
 
-- ALWAYS write sentinel file before dispatching any agent
-- ALWAYS write current_task.json before each generator dispatch
-- ALWAYS delete sentinel on completion or error
-- Circuit breaker checks after every task
-- HITL gates at: post_plan, on_circuit_break, budget_warning, pre_merge
+- NEVER make flow decisions — the orchestrator decides
+- ALWAYS save agent output to the path specified by the orchestrator
+- ALWAYS pass the full agent output to `record()`
+- If the orchestrator says `dispatch_agent`, dispatch the agent
+- If the orchestrator says `hitl_gate`, ask the user
+- If the orchestrator says `complete`, stop
