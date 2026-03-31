@@ -30,6 +30,6 @@ esac
 
 # Run auto-fix
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(dirname "$(dirname "$(dirname "$0")")")}"
-python3 "${PLUGIN_ROOT}/src/core/auto_fix_deps.py" "$FILE_PATH" 2>&1 || true
+PYTHONPATH="${PLUGIN_ROOT}" python3 -m src.core.auto_fix_deps "$FILE_PATH" 2>&1 || true
 
 exit 0
