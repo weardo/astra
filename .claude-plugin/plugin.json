@@ -1,0 +1,14 @@
+{
+  "name": "astra",
+  "version": "0.1.0",
+  "description": "Adversarial planning, hook-enforced quality, event-sourced state, parallel execution, and PR lifecycle for Claude Code.",
+  "author": "weardo",
+  "skills": [
+    "skills/astra-init",
+    "skills/astra-run",
+    "skills/astra-resume",
+    "skills/astra-status"
+  ],
+  "hooks": "hooks/hooks.json",
+  "agents": "agents/"
+}
