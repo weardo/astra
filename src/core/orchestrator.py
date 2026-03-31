@@ -24,6 +24,7 @@ from typing import Optional
 
 from .event_store import EventStore
 from .planner import build_role_prompt, get_role_sequence, resolve_model
+from .repo_map import generate_lightweight_map
 from .runs import RunManager
 from .work_plan import WorkPlan
 
@@ -384,10 +385,41 @@ class Orchestrator:
     # Helpers
     # -------------------------------------------------------------------------
 
+    def _get_repo_map(self) -> str:
+        """Generate repo map from project_dir, caching the result."""
+        if not hasattr(self, "_repo_map_cache"):
+            if self.project_dir and Path(self.project_dir).exists():
+                self._repo_map_cache = generate_lightweight_map(self.project_dir)
+            else:
+                self._repo_map_cache = ""
+        return self._repo_map_cache
+
+    def _build_scoped_context(self, task: dict) -> str:
+        """Build scoped context: only this task + its dependency chain."""
+        if not self._work_plan:
+            return json.dumps(task, indent=2)
+
+        context_tasks = [task]
+        visited = {task["id"]}
+
+        # Walk dependency chain
+        queue = list(task.get("depends_on", []))
+        while queue:
+            dep_id = queue.pop(0)
+            if dep_id in visited:
+                continue
+            visited.add(dep_id)
+            dep_task = self._work_plan.get_task(dep_id)
+            if dep_task:
+                context_tasks.append(dep_task)
+                queue.extend(dep_task.get("depends_on", []))
+
+        return json.dumps(context_tasks, indent=2)
+
     def _build_planner_replacements(self, role: str) -> dict:
         replacements = {
             "{{DETECTION_JSON}}": json.dumps(self._detection, indent=2),
-            "{{REPO_MAP}}": "",
+            "{{REPO_MAP}}": self._get_repo_map(),
             "{{USER_PROMPT}}": self._prompt,
         }
         if self._work_plan:
@@ -403,8 +435,8 @@ class Orchestrator:
     def _build_generator_replacements(self, task: dict) -> dict:
         return {
             "{{DETECTION_JSON}}": json.dumps(self._detection, indent=2),
-            "{{REPO_MAP}}": "",
-            "{{CURRENT_TASK}}": json.dumps(task, indent=2),
+            "{{REPO_MAP}}": self._get_repo_map(),
+            "{{CURRENT_TASK}}": self._build_scoped_context(task),
             "{{FEEDBACK}}": self._load_feedback(),
             "{{TEST_COMMAND}}": self._detection.get("test_command", "npm test"),
             "{{TASK_DESCRIPTION}}": task.get("description", ""),

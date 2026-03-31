@@ -207,6 +207,55 @@ class TestCombineVerdicts:
         assert result["verdict"] == "PASS"
 
 
+class TestScopedContext:
+    def test_scoped_context_includes_task_and_deps(self, orch):
+        """Scoped context includes the task and its dependency chain."""
+        orch.init(prompt="test", detection={"stack": "typescript"})
+        work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
+            "stories": [{"id": "s1", "name": "S", "tasks": [
+                {"id": "t1", "description": "Create handler", "acceptance_criteria": ["ac"],
+                 "steps": [], "depends_on": [], "target_files": ["src/handler.ts"],
+                 "status": "done", "attempts": 0, "blocked_reason": None},
+                {"id": "t2", "description": "Add tests", "acceptance_criteria": ["ac"],
+                 "steps": [], "depends_on": ["t1"], "target_files": ["tests/handler.test.ts"],
+                 "status": "pending", "attempts": 0, "blocked_reason": None},
+            ]}]}]}]}
+        orch.record(role="architect", output=json.dumps(work_plan))
+        orch.record(role="validator", output='{"valid": true}')
+        orch.record_hitl(gate="post_plan", decision="continue")
+
+        # t1 is done, so next task is t2 which depends on t1
+        # The scoped context should include both t2 and t1
+        task = orch._work_plan.get_task("t2")
+        scoped = orch._build_scoped_context(task)
+        assert "t1" in scoped
+        assert "t2" in scoped
+        assert "Create handler" in scoped
+
+    def test_repo_map_injected_into_prompt(self, orch, tmp_path):
+        """Repo map appears in the generated prompt."""
+        # Create a project dir with a source file
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / "src").mkdir()
+        (project_dir / "src" / "app.ts").write_text("export function start() {}\n")
+        orch.project_dir = project_dir
+
+        orch.init(prompt="test", detection={"stack": "typescript"})
+        work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
+            "stories": [{"id": "s1", "name": "S", "tasks": [
+                {"id": "t1", "description": "X", "acceptance_criteria": ["ac"],
+                 "steps": [], "depends_on": [], "target_files": ["src/x.ts"],
+                 "status": "pending", "attempts": 0, "blocked_reason": None}
+            ]}]}]}]}
+        orch.record(role="architect", output=json.dumps(work_plan))
+        orch.record(role="validator", output='{"valid": true}')
+        action = orch.record_hitl(gate="post_plan", decision="continue")
+
+        # The generator prompt should contain the repo map with app.ts
+        assert "app.ts" in action["prompt"]
+
+
 class TestCircuitBreakerWiring:
     def _setup_and_get_to_generator(self, orch):
         orch.init(prompt="test", detection={"stack": "typescript"})
