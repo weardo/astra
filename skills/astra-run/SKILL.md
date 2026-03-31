@@ -41,10 +41,11 @@ Repeat until `action` is `complete` or `error`:
 ### If action is `dispatch_agent`
 
 1. Read `action.prompt_file`, `action.model`, `action.role` from the JSON
-2. Dispatch a **general-purpose** Agent — do NOT use any specialized agent type (no feature-dev, no code-architect, no code-reviewer agents). The prompt file contains all instructions the agent needs:
+2. Map the role to the correct astra agent:
    ```
-   Agent(prompt="Read and follow all instructions in {action.prompt_file}", model=action.model, subagent_type="general-purpose")
+   Agent(prompt="Read and follow all instructions in {action.prompt_file}", model=action.model, subagent_type="astra:{action.role}")
    ```
+   For example: role "architect" → `subagent_type="astra:architect"`, role "generator" → `subagent_type="astra:generator"`, role "test-runner" → `subagent_type="astra:test-runner"`
 3. Save agent output to `action.save_output_to`
 4. Get next action:
 ```bash
@@ -84,7 +85,7 @@ Output `action.message`. Stop.
 ## Rules
 
 - NEVER make flow decisions — the orchestrator decides
-- NEVER use specialized agent types (feature-dev, code-architect, code-reviewer, etc.) — ALWAYS use general-purpose agents. The prompt file already contains the role's full instructions.
+- ALWAYS use `astra:` prefixed agent types — `astra:architect`, `astra:generator`, `astra:test-runner`, etc. NEVER use agents from other plugins (feature-dev, pr-review-toolkit, superpowers).
 - ALWAYS save agent output to the path specified by the orchestrator
 - ALWAYS pass the full agent output to `record()`
 - If the orchestrator says `dispatch_agent`, dispatch the agent
