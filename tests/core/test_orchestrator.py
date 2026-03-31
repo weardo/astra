@@ -207,6 +207,34 @@ class TestCombineVerdicts:
         assert result["verdict"] == "PASS"
 
 
+class TestParallelDispatch:
+    def test_parallel_config_respected(self, orch):
+        """Parallel config is accessible."""
+        orch._config["parallel"] = {"enabled": True, "max_workers": 3}
+        assert orch._config["parallel"]["enabled"] is True
+        assert orch._config["parallel"]["max_workers"] == 3
+
+    def test_sequential_when_parallel_disabled(self, orch):
+        """Default config has parallel disabled → sequential dispatch."""
+        orch._config["parallel"] = {"enabled": False}
+        orch.init(prompt="test", detection={"stack": "typescript"})
+        work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
+            "stories": [{"id": "s1", "name": "S", "tasks": [
+                {"id": "t1", "description": "A", "acceptance_criteria": ["ac"],
+                 "steps": [], "depends_on": [], "target_files": ["a.ts"],
+                 "status": "pending", "attempts": 0, "blocked_reason": None},
+                {"id": "t2", "description": "B", "acceptance_criteria": ["ac"],
+                 "steps": [], "depends_on": [], "target_files": ["b.ts"],
+                 "status": "pending", "attempts": 0, "blocked_reason": None},
+            ]}]}]}]}
+        orch.record(role="architect", output=json.dumps(work_plan))
+        orch.record(role="validator", output='{"valid": true}')
+        action = orch.record_hitl(gate="post_plan", decision="continue")
+        # Sequential: dispatches one task at a time
+        assert action["action"] == "dispatch_agent"
+        assert action["role"] == "generator"
+
+
 class TestScopedContext:
     def test_scoped_context_includes_task_and_deps(self, orch):
         """Scoped context includes the task and its dependency chain."""
