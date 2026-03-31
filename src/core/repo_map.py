@@ -14,7 +14,7 @@ from typing import Optional
 # Directories to always skip
 SKIP_DIRS = {
     "node_modules", ".git", ".venv", "__pycache__", ".pytest_cache",
-    "dist", "build", ".next", ".nuxt", "vendor", ".astra",
+    "dist", "build", "out", ".next", ".nuxt", ".cache", "vendor", ".astra",
 }
 
 # File extensions to include

@@ -7,25 +7,30 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/src/assets/path-guard.sh\""
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/src/hooks/warn_scope_drift.sh\""
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Write|Edit",
+        "matcher": "Write",
         "hooks": [
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/src/hooks/auto_fix_deps.sh\""
-          },
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/src/hooks/track_files_touched.sh\""
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/src/hooks/warn_scope_drift.sh\""
           },
           {
             "type": "command",

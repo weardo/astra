@@ -66,10 +66,8 @@ def build_role_prompt(
         raise FileNotFoundError(f"Prompt template not found: {prompt_path}")
 
     content = prompt_path.read_text()
-    for placeholder, value in replacements.items():
-        content = content.replace(placeholder, value)
 
-    # Append reference sections
+    # Append reference sections BEFORE replacement so placeholders in references get resolved
     sections = append_sections if append_sections is not None else ROLE_INJECTIONS.get(role, [])
     if sections and references_dir:
         references_dir = Path(references_dir)
@@ -77,6 +75,10 @@ def build_role_prompt(
             section_path = references_dir / section_file
             if section_path.exists():
                 content += f"\n\n---\n\n{section_path.read_text()}"
+
+    # Apply replacements to entire content (base prompt + appended references)
+    for placeholder, value in replacements.items():
+        content = content.replace(placeholder, value)
 
     return content
 

@@ -169,7 +169,9 @@ class Orchestrator:
             references_dir=self._references_dir,
         )
         model = resolve_model(role, self._config)
-        save_path = str(self.run_dir / f"{role}_output.md")
+        # Architect/refiner produce JSON work plans, others produce markdown
+        ext = ".json" if role in ("architect", "refiner", "fixer") else ".md"
+        save_path = str(self.run_dir / f"{role}_output{ext}")
 
         return {
             "action": "dispatch_agent",
