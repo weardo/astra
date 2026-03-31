@@ -1,0 +1,18 @@
+{
+  "name": "weardo-plugins",
+  "description": "Personal Claude Code plugins by weardo",
+  "owner": {
+    "name": "weardo",
+    "url": "https://github.com/weardo"
+  },
+  "plugins": [
+    {
+      "name": "astra",
+      "description": "Adversarial planning, hook-enforced quality, event-sourced state, parallel execution, and PR lifecycle for Claude Code.",
+      "source": ".",
+      "category": "development",
+      "version": "0.1.0",
+      "tags": ["harness", "planning", "tdd", "parallel", "orchestrator"]
+    }
+  ]
+}
