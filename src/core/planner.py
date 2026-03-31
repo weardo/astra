@@ -1,0 +1,100 @@
+"""
+Planner Orchestration Helpers
+==============================
+
+Build prompts for planner roles, determine adaptive depth,
+and resolve model routing.
+"""
+
+from pathlib import Path
+from typing import Optional
+
+
+# Role-to-agent-type mapping for model routing
+ROLE_AGENT_TYPE = {
+    "architect": "planner",
+    "adversary": "planner",
+    "refiner": "planner",
+    "validator": "planner",
+    "investigator": "planner",
+    "bugfix-adversary": "planner",
+    "fixer": "planner",
+    "verifier": "planner",
+    "generator": "generator",
+    "evaluator": "evaluator",
+}
+
+# Default thresholds for adaptive depth
+DEFAULT_THRESHOLDS = {
+    "light_max_tasks": 5,
+    "full_min_tasks": 20,
+}
+
+
+def build_role_prompt(
+    role: str,
+    prompts_dir: Path,
+    replacements: dict,
+) -> str:
+    """Load a prompt template and apply placeholder substitutions.
+
+    Args:
+        role: Role name (e.g., "architect", "adversary")
+        prompts_dir: Directory containing prompt .md files
+        replacements: Dict of {{PLACEHOLDER}} -> value
+
+    Returns:
+        The prompt string with all placeholders replaced.
+    """
+    prompts_dir = Path(prompts_dir)
+    prompt_path = prompts_dir / f"{role}.md"
+
+    if not prompt_path.exists():
+        raise FileNotFoundError(f"Prompt template not found: {prompt_path}")
+
+    content = prompt_path.read_text()
+    for placeholder, value in replacements.items():
+        content = content.replace(placeholder, value)
+
+    return content
+
+
+def get_role_sequence(
+    input_mode: str,
+    task_count: int = 0,
+    thresholds: Optional[dict] = None,
+) -> list:
+    """Determine the planner role sequence based on input mode and task count.
+
+    Args:
+        input_mode: "prompt", "spec", or "plan"
+        task_count: Number of tasks (for adaptive depth)
+        thresholds: Override depth thresholds
+
+    Returns:
+        List of role names to execute in order.
+    """
+    if input_mode == "plan":
+        return []
+
+    thresholds = thresholds or DEFAULT_THRESHOLDS
+    light_max = thresholds.get("light_max_tasks", 5)
+    full_min = thresholds.get("full_min_tasks", 20)
+
+    if task_count <= light_max:
+        return ["architect", "validator"]
+    elif task_count >= full_min:
+        return ["architect", "adversary", "refiner", "adversary", "refiner", "validator"]
+    else:
+        return ["architect", "adversary", "refiner", "validator"]
+
+
+def resolve_model(role: str, config: dict) -> str:
+    """Resolve the model to use for a given role.
+
+    Maps role to agent type (planner/generator/evaluator),
+    then looks up the model in config.model_routing.
+    """
+    agent_type = ROLE_AGENT_TYPE.get(role, "generator")
+    routing = config.get("model_routing", {})
+    return routing.get(agent_type, "sonnet")
