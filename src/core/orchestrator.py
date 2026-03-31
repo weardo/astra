@@ -311,6 +311,65 @@ class Orchestrator:
         return self._start_generator_loop()
 
     # -------------------------------------------------------------------------
+    # Verdict combination
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def combine_verdicts(verdicts: list) -> dict:
+        """Combine multiple evaluator verdicts into a single result.
+
+        Args:
+            verdicts: List of {agent, verdict, details} dicts.
+
+        Returns:
+            {verdict: "PASS"|"FAIL", reasons: list[str]}
+        """
+        reasons = []
+        for v in verdicts:
+            if v.get("verdict") == "FAIL":
+                reasons.append(f"{v.get('agent', 'unknown')}: {v.get('details', 'failed')}")
+
+        return {
+            "verdict": "FAIL" if reasons else "PASS",
+            "reasons": reasons,
+        }
+
+    # -------------------------------------------------------------------------
+    # Scope drift detection
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _detect_scope_drift_static(run_dir, task: dict) -> list:
+        """Check if files were touched that aren't in the task's target_files.
+
+        Returns list of undeclared file paths.
+        """
+        run_dir = Path(run_dir)
+        touched_path = run_dir / "files_touched.txt"
+        if not touched_path.exists():
+            return []
+
+        target_files = set(task.get("target_files", []))
+        touched = set()
+        for line in touched_path.read_text().strip().split("\n"):
+            line = line.strip()
+            if line:
+                touched.add(line)
+
+        undeclared = []
+        for f in touched:
+            # Check if any target_file matches (exact or suffix match)
+            matched = False
+            for t in target_files:
+                if f == t or f.endswith("/" + t) or t.endswith("/" + f.split("/")[-1]):
+                    matched = True
+                    break
+            if not matched:
+                undeclared.append(f)
+
+        return undeclared
+
+    # -------------------------------------------------------------------------
     # HITL
     # -------------------------------------------------------------------------
 

@@ -1,0 +1,8 @@
+{
+  "name": "counter-app",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "echo 'tests pass' && exit 0",
+    "build": "echo 'build ok'"
+  }
+}

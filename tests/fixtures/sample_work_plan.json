@@ -1,0 +1,44 @@
+{
+  "phases": [
+    {
+      "id": "phase-0",
+      "name": "Setup",
+      "epics": [
+        {
+          "id": "epic-001",
+          "name": "Counter Feature",
+          "stories": [
+            {
+              "id": "story-001",
+              "name": "Basic Counter",
+              "tasks": [
+                {
+                  "id": "task-001",
+                  "description": "Create counter module with increment/decrement",
+                  "acceptance_criteria": ["increment increases count by 1", "decrement decreases count by 1"],
+                  "steps": ["Create src/counter.ts", "Export increment and decrement functions"],
+                  "depends_on": [],
+                  "target_files": ["src/counter.ts"],
+                  "status": "pending",
+                  "attempts": 0,
+                  "blocked_reason": null
+                },
+                {
+                  "id": "task-002",
+                  "description": "Add counter tests",
+                  "acceptance_criteria": ["tests cover increment", "tests cover decrement"],
+                  "steps": ["Create tests/counter.test.ts"],
+                  "depends_on": ["task-001"],
+                  "target_files": ["tests/counter.test.ts"],
+                  "status": "pending",
+                  "attempts": 0,
+                  "blocked_reason": null
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

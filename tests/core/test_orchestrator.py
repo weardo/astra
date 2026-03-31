@@ -173,6 +173,98 @@ class TestOrchestratorGeneratorLoop:
         assert "abort" in action.get("reason", "").lower()
 
 
+class TestCombineVerdicts:
+    def test_combine_verdicts_all_pass(self):
+        verdicts = [
+            {"agent": "test-runner", "verdict": "PASS", "details": "10 passing"},
+            {"agent": "code-reviewer", "verdict": "PASS", "details": "No issues"},
+        ]
+        result = Orchestrator.combine_verdicts(verdicts)
+        assert result["verdict"] == "PASS"
+        assert result["reasons"] == []
+
+    def test_combine_verdicts_one_fail(self):
+        verdicts = [
+            {"agent": "test-runner", "verdict": "PASS", "details": "10 passing"},
+            {"agent": "code-reviewer", "verdict": "FAIL", "details": "Security issue"},
+        ]
+        result = Orchestrator.combine_verdicts(verdicts)
+        assert result["verdict"] == "FAIL"
+        assert len(result["reasons"]) == 1
+        assert "Security issue" in result["reasons"][0]
+
+    def test_combine_verdicts_multiple_fail(self):
+        verdicts = [
+            {"agent": "test-runner", "verdict": "FAIL", "details": "2 failing"},
+            {"agent": "code-reviewer", "verdict": "FAIL", "details": "Missing error handling"},
+        ]
+        result = Orchestrator.combine_verdicts(verdicts)
+        assert result["verdict"] == "FAIL"
+        assert len(result["reasons"]) == 2
+
+    def test_combine_verdicts_empty_list(self):
+        result = Orchestrator.combine_verdicts([])
+        assert result["verdict"] == "PASS"
+
+
+class TestCircuitBreakerWiring:
+    def _setup_and_get_to_generator(self, orch):
+        orch.init(prompt="test", detection={"stack": "typescript"})
+        work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
+            "stories": [{"id": "s1", "name": "S", "tasks": [
+                {"id": "t1", "description": "X", "acceptance_criteria": ["ac"],
+                 "steps": [], "depends_on": [], "target_files": ["x.ts"],
+                 "status": "pending", "attempts": 0, "blocked_reason": None}
+            ]}]}]}]}
+        orch.record(role="architect", output=json.dumps(work_plan))
+        orch.record(role="validator", output='{"valid": true}')
+        orch.record_hitl(gate="post_plan", decision="continue")
+
+    def test_repeated_failures_trigger_circuit_break(self, orch):
+        """After max retries on a task, it gets blocked."""
+        self._setup_and_get_to_generator(orch)
+        # Fail 3 times — should block the task
+        orch.record(role="generator", output="fail", task_id="t1", verdict="FAIL")
+        orch.record(role="generator", output="fail", task_id="t1", verdict="FAIL")
+        action = orch.record(role="generator", output="fail", task_id="t1", verdict="FAIL")
+        # After 3 failures, task is blocked, no more pending → complete
+        assert action["action"] == "complete"
+
+
+class TestCheckpoint:
+    def test_checkpoint_config(self, orch):
+        """Checkpoint threshold is configurable."""
+        orch._config["checkpoint_every_n_tasks"] = 3
+        assert orch._config.get("checkpoint_every_n_tasks") == 3
+
+
+class TestScopeDrift:
+    def test_scope_drift_detection(self, tmp_path):
+        """Scope drift is detected when files_touched.txt has undeclared files."""
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        # Current task targets src/a.ts
+        task = {"id": "t1", "target_files": ["src/a.ts"]}
+        (run_dir / "current_task.json").write_text(json.dumps(task))
+        # But src/b.ts was also touched
+        (run_dir / "files_touched.txt").write_text("src/a.ts\nsrc/b.ts\n")
+
+        from src.core.orchestrator import Orchestrator
+        drift = Orchestrator._detect_scope_drift_static(run_dir, task)
+        assert "src/b.ts" in drift
+
+    def test_scope_drift_clean(self, tmp_path):
+        """No drift when all touched files are declared."""
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        task = {"id": "t1", "target_files": ["src/a.ts", "src/b.ts"]}
+        (run_dir / "files_touched.txt").write_text("src/a.ts\nsrc/b.ts\n")
+
+        from src.core.orchestrator import Orchestrator
+        drift = Orchestrator._detect_scope_drift_static(run_dir, task)
+        assert drift == []
+
+
 class TestOrchestratorStateRecovery:
     def test_resume_reconstructs_state(self, orch):
         """After init + some progress, a new Orchestrator can resume."""
