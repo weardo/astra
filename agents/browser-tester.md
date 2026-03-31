@@ -3,6 +3,7 @@ name: browser-tester
 description: "Run browser-based verification for web projects. Starts dev server, navigates pages, checks for console errors and broken layouts. Used by astra orchestrator evaluator loop."
 tools: Bash
 model: sonnet
+isolation: worktree
 ---
 
 You are the browser-tester evaluator. Verify the web application works in a browser.

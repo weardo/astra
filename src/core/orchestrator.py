@@ -24,15 +24,19 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from .auto_fix_deps import fix_work_plan
 from .circuit_breaker import CircuitBreaker, hash_error
 from .completion import check_exit_conditions
+from .cost_tracker import CostTracker
 from .discovery import format_for_prompt as format_discoveries
 from .event_store import EventStore
 from .planner import build_role_prompt, get_role_sequence, resolve_model
+from .pr_lifecycle import build_branch_name, build_pr_description
 from .progress import parse_status_block
 from .repo_map import generate_repo_map
 from .runs import RunManager
 from .work_plan import WorkPlan
+from .worktree import should_use_worktree
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +70,8 @@ class Orchestrator:
         self._current_task_id_for_eval: Optional[str] = None
         # Circuit breaker (initialized when run_dir is set)
         self._circuit_breaker: Optional[CircuitBreaker] = None
+        # Cost tracking
+        self._cost_tracker = CostTracker()
         # Budget/time/iteration tracking
         self._start_time: float = 0.0
         self._iteration_count: int = 0
@@ -123,12 +129,20 @@ class Orchestrator:
         output: str,
         task_id: Optional[str] = None,
         verdict: Optional[str] = None,
+        cost_usd: float = 0.0,
     ) -> dict:
         """Record an agent's output and return the next action."""
         self._store.append({
             "type": f"{role}_completed",
             "data": {"role": role, "task_id": task_id, "verdict": verdict},
         })
+
+        # Track cost
+        from .planner import ROLE_AGENT_TYPE
+        agent_type = ROLE_AGENT_TYPE.get(role, "generator")
+        self._cost_tracker.record(agent_type, cost_usd)
+        if task_id:
+            self._cost_tracker.record_feature(task_id, agent_type, cost_usd)
 
         # Planner phase
         if role in ("architect", "adversary", "refiner", "validator", "verifier"):
@@ -255,12 +269,14 @@ class Orchestrator:
 
     def _try_load_work_plan(self, output: str) -> None:
         """Try to parse work plan JSON from agent output."""
+        loaded = False
         try:
             data = json.loads(output)
             if "phases" in data:
                 self._work_plan = WorkPlan(data)
                 wp_path = self.run_dir / "work_plan.json"
                 self._work_plan.save(wp_path)
+                loaded = True
         except (json.JSONDecodeError, TypeError):
             # Agent might output markdown with embedded JSON
             import re
@@ -271,8 +287,17 @@ class Orchestrator:
                     self._work_plan = WorkPlan(data)
                     wp_path = self.run_dir / "work_plan.json"
                     self._work_plan.save(wp_path)
+                    loaded = True
                 except (json.JSONDecodeError, TypeError):
                     pass
+
+        # Auto-fix file conflicts in the work plan
+        if loaded:
+            wp_path = self.run_dir / "work_plan.json"
+            result = fix_work_plan(wp_path)
+            if result["deps_added"] > 0:
+                self._work_plan = WorkPlan.load(wp_path)
+                logger.info("Auto-fixed %d file conflicts in work plan", result["deps_added"])
 
     # -------------------------------------------------------------------------
     # Generator loop
@@ -292,10 +317,25 @@ class Orchestrator:
         task = self._work_plan.get_next_task()
         if task is None:
             self._cleanup()
-            return {
+            result = {
                 "action": "complete",
                 "summary": self._work_plan.count_tasks(),
+                "cost": self._cost_tracker.to_dict(),
             }
+            # Add PR info if enabled
+            pr_config = self._config.get("pr", {})
+            if pr_config.get("enabled"):
+                result["pr"] = {
+                    "branch": build_branch_name({"id": self.run_dir.name, "description": self._prompt}),
+                    "description": build_pr_description({
+                        "id": self.run_dir.name,
+                        "description": self._prompt,
+                        "acceptance_criteria": [],
+                        "target_files": [],
+                    }),
+                    "granularity": pr_config.get("granularity", "feature"),
+                }
+            return result
 
         # Write current_task.json
         task_path = self.run_dir / "current_task.json"
@@ -317,7 +357,7 @@ class Orchestrator:
         prompt_file = self.run_dir / f"prompt_generator_{task['id']}.md"
         prompt_file.write_text(prompt)
 
-        return {
+        action = {
             "action": "dispatch_agent",
             "role": "generator",
             "model": model,
@@ -326,6 +366,12 @@ class Orchestrator:
             "save_output_to": str(self.run_dir / f"generator_{task['id']}.md"),
             "task_id": task["id"],
         }
+
+        # Add worktree isolation hint for write-heavy tasks
+        if should_use_worktree(task.get("description", "")):
+            action["isolation"] = "worktree"
+
+        return action
 
     def _handle_generator_output(
         self, task_id: Optional[str], verdict: Optional[str], output: str
@@ -419,7 +465,7 @@ class Orchestrator:
         elapsed = time.time() - self._start_time
         state_dict = {
             "iteration": self._iteration_count,
-            "total_cost_usd": 0,  # Cost tracking not yet wired
+            "total_cost_usd": self._cost_tracker.total,
         }
         result = check_exit_conditions(state_dict, self._config, elapsed)
         if result and result.get("should_exit"):

@@ -51,6 +51,7 @@ def _save_state(data_dir: Path, orch: Orchestrator) -> None:
         "current_task_id_for_eval": orch._current_task_id_for_eval,
         "iteration_count": orch._iteration_count,
         "start_time": orch._start_time,
+        "cost_tracker": orch._cost_tracker.to_dict(),
     }
     state_path = data_dir / STATE_FILE
     state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -78,6 +79,9 @@ def _load_state(data_dir: Path, orch: Orchestrator) -> None:
     orch._current_task_id_for_eval = state.get("current_task_id_for_eval")
     orch._iteration_count = state.get("iteration_count", 0)
     orch._start_time = state.get("start_time", time.time())
+    if state.get("cost_tracker"):
+        from .cost_tracker import CostTracker
+        orch._cost_tracker = CostTracker.from_dict(state["cost_tracker"])
 
     # Reload work plan if it exists
     if orch.run_dir:
@@ -128,6 +132,7 @@ def cmd_record(args):
         output=args.output or "",
         task_id=args.task_id,
         verdict=args.verdict,
+        cost_usd=float(args.cost_usd or 0),
     )
     _save_state(data_dir, orch)
     print(json.dumps(action))
@@ -184,6 +189,7 @@ def main():
     p_rec.add_argument("--output", default="")
     p_rec.add_argument("--task-id", default=None)
     p_rec.add_argument("--verdict", default=None)
+    p_rec.add_argument("--cost-usd", default=None)
     p_rec.add_argument("--config", default=None)
 
     # record-hitl
