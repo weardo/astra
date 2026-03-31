@@ -9,8 +9,5 @@
   "homepage": "https://github.com/weardo/astra",
   "repository": "https://github.com/weardo/astra",
   "license": "MIT",
-  "keywords": ["harness", "planning", "tdd", "parallel", "orchestrator"],
-  "skills": "./skills/",
-  "agents": "./agents/",
-  "hooks": "./hooks/hooks.json"
+  "keywords": ["harness", "planning", "tdd", "parallel", "orchestrator"]
 }
