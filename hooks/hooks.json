@@ -1,46 +1,46 @@
 {
-  "hooks": [
-    {
-      "event": "PreToolUse",
-      "tools": ["Write"],
-      "command": "${CLAUDE_PLUGIN_ROOT}/src/assets/path-guard.sh",
-      "description": "Block writes to wrong directories"
-    },
-    {
-      "event": "PostToolUse",
-      "tools": ["Write", "Edit"],
-      "command": "${CLAUDE_PLUGIN_ROOT}/src/hooks/auto_fix_deps.sh",
-      "description": "Auto-fix work plan file conflicts after planner writes"
-    },
-    {
-      "event": "PostToolUse",
-      "tools": ["Write", "Edit"],
-      "command": "${CLAUDE_PLUGIN_ROOT}/src/hooks/track_files_touched.sh",
-      "description": "Track all files touched during a run"
-    },
-    {
-      "event": "PostToolUse",
-      "tools": ["Write", "Edit"],
-      "command": "${CLAUDE_PLUGIN_ROOT}/src/hooks/warn_scope_drift.sh",
-      "description": "Warn when modifying files outside task target_files"
-    },
-    {
-      "event": "PostToolUse",
-      "tools": ["Write", "Edit"],
-      "command": "${CLAUDE_PLUGIN_ROOT}/src/assets/lint-runner.sh",
-      "description": "Auto-detect and run linter on modified files"
-    },
-    {
-      "event": "PostToolUse",
-      "tools": ["Write", "Edit"],
-      "command": "${CLAUDE_PLUGIN_ROOT}/src/assets/format-runner.sh",
-      "description": "Auto-detect and run formatter on modified files"
-    },
-    {
-      "event": "PostToolUse",
-      "tools": ["Write", "Edit"],
-      "command": "${CLAUDE_PLUGIN_ROOT}/src/assets/test-runner.sh",
-      "description": "Auto-detect and run test suite on modified files"
-    }
-  ]
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/src/assets/path-guard.sh\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/src/hooks/auto_fix_deps.sh\""
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/src/hooks/track_files_touched.sh\""
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/src/hooks/warn_scope_drift.sh\""
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/src/assets/lint-runner.sh\""
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/src/assets/format-runner.sh\""
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/src/assets/test-runner.sh\""
+          }
+        ]
+      }
+    ]
+  }
 }

@@ -11,5 +11,6 @@
   "license": "MIT",
   "keywords": ["harness", "planning", "tdd", "parallel", "orchestrator"],
   "skills": "./skills/",
+  "agents": "./agents/",
   "hooks": "./hooks/hooks.json"
 }
