@@ -59,13 +59,20 @@ class TestCLIInit:
         assert action["role"] == "generator"
 
     def test_init_creates_state_file(self, tmp_path):
-        run_cli(
+        result = run_cli(
             "init",
             "--data-dir", str(tmp_path / ".astra"),
             "--prompt", "test",
             "--detection", '{"stack": "python"}',
         )
-        state_file = tmp_path / ".astra" / ".orchestrator_state.json"
+        # State file now lives in run_dir (per-run), not data_dir
+        import json
+        action = json.loads(result.stdout)
+        # Find the run dir from the current symlink
+        current_link = tmp_path / ".astra" / "runs" / "current"
+        assert current_link.exists()
+        run_dir = current_link.resolve()
+        state_file = run_dir / ".orchestrator_state.json"
         assert state_file.exists()
 
 

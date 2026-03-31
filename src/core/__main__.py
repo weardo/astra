@@ -38,7 +38,7 @@ def _resolve_dirs(data_dir: str) -> tuple:
 
 
 def _save_state(data_dir: Path, orch: Orchestrator) -> None:
-    """Persist orchestrator state between CLI calls."""
+    """Persist orchestrator state into run_dir (per-run, not global)."""
     state = {
         "run_dir": str(orch.run_dir) if orch.run_dir else None,
         "project_dir": str(orch.project_dir) if orch.project_dir else None,
@@ -53,14 +53,21 @@ def _save_state(data_dir: Path, orch: Orchestrator) -> None:
         "start_time": orch._start_time,
         "cost_tracker": orch._cost_tracker.to_dict(),
     }
-    state_path = data_dir / STATE_FILE
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps(state, indent=2))
+    # Save per-run state in run_dir
+    if orch.run_dir:
+        state_path = Path(orch.run_dir) / STATE_FILE
+        state_path.write_text(json.dumps(state, indent=2))
 
 
 def _load_state(data_dir: Path, orch: Orchestrator) -> None:
-    """Restore orchestrator state from previous CLI call."""
-    state_path = data_dir / STATE_FILE
+    """Restore orchestrator state from the current run's directory."""
+    # Use RunManager's 'current' symlink to find active run
+    from .runs import RunManager
+    rm = RunManager(data_dir)
+    run_dir = rm.get_current()
+    if run_dir is None:
+        return
+    state_path = run_dir / STATE_FILE
     if not state_path.exists():
         return
     state = json.loads(state_path.read_text())
