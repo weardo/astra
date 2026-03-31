@@ -30,7 +30,7 @@ from .discovery import format_for_prompt as format_discoveries
 from .event_store import EventStore
 from .planner import build_role_prompt, get_role_sequence, resolve_model
 from .progress import parse_status_block
-from .repo_map import generate_lightweight_map
+from .repo_map import generate_repo_map
 from .runs import RunManager
 from .work_plan import WorkPlan
 
@@ -617,7 +617,7 @@ class Orchestrator:
         """Generate repo map from project_dir, caching the result."""
         if not hasattr(self, "_repo_map_cache"):
             if self.project_dir and Path(self.project_dir).exists():
-                self._repo_map_cache = generate_lightweight_map(self.project_dir)
+                self._repo_map_cache = generate_repo_map(self.project_dir)
             else:
                 self._repo_map_cache = ""
         return self._repo_map_cache
