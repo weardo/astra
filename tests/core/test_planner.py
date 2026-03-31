@@ -8,6 +8,7 @@ from src.core.planner import build_role_prompt, get_role_sequence, resolve_model
 
 
 PROMPTS_DIR = Path(__file__).parent.parent.parent / "src" / "prompts"
+REFERENCES_DIR = Path(__file__).parent.parent.parent / "references"
 
 
 class TestBuildRolePrompt:
@@ -32,9 +33,70 @@ class TestBuildRolePrompt:
 
     def test_build_planner_prompt_with_plan_skips_planner(self):
         """When input is a plan path, planner should not be invoked."""
-        # This is a logic test — get_role_sequence returns empty for plan mode
         seq = get_role_sequence("plan", task_count=0)
         assert seq == []
+
+    def test_generator_prompt_includes_failure_modes(self):
+        """Generator prompts auto-inject failure-modes.md reference."""
+        replacements = {
+            "{{DETECTION_JSON}}": "{}",
+            "{{REPO_MAP}}": "",
+            "{{CURRENT_TASK}}": "task-001",
+            "{{FEEDBACK}}": "",
+            "{{TEST_COMMAND}}": "npm test",
+            "{{TASK_DESCRIPTION}}": "test",
+        }
+        result = build_role_prompt(
+            "generator", PROMPTS_DIR, replacements,
+            references_dir=REFERENCES_DIR,
+        )
+        assert "FM-01" in result
+        assert "FM-10" in result
+        assert "FTS Trigger" in result
+
+    def test_generator_prompt_includes_recovery_protocol(self):
+        """Generator prompts auto-inject recovery protocol."""
+        replacements = {
+            "{{DETECTION_JSON}}": "{}",
+            "{{REPO_MAP}}": "",
+            "{{CURRENT_TASK}}": "task-001",
+            "{{FEEDBACK}}": "",
+            "{{TEST_COMMAND}}": "npm test",
+            "{{TASK_DESCRIPTION}}": "test",
+        }
+        result = build_role_prompt(
+            "generator", PROMPTS_DIR, replacements,
+            references_dir=REFERENCES_DIR,
+        )
+        assert "Recovery Check" in result
+        assert "Regression Check" in result
+
+    def test_non_generator_prompt_no_injection(self):
+        """Non-generator roles don't get failure modes injected."""
+        replacements = {
+            "{{DETECTION_JSON}}": "{}",
+            "{{REPO_MAP}}": "",
+            "{{USER_PROMPT}}": "test",
+        }
+        result = build_role_prompt(
+            "architect", PROMPTS_DIR, replacements,
+            references_dir=REFERENCES_DIR,
+        )
+        assert "FM-01" not in result
+
+    def test_explicit_append_sections_override(self):
+        """Explicit append_sections overrides ROLE_INJECTIONS defaults."""
+        replacements = {
+            "{{DETECTION_JSON}}": "{}",
+            "{{REPO_MAP}}": "",
+            "{{USER_PROMPT}}": "test",
+        }
+        result = build_role_prompt(
+            "architect", PROMPTS_DIR, replacements,
+            references_dir=REFERENCES_DIR,
+            append_sections=["failure-modes.md"],
+        )
+        assert "FM-01" in result
 
 
 class TestResolveModel:

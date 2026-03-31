@@ -30,21 +30,34 @@ DEFAULT_THRESHOLDS = {
     "full_min_tasks": 20,
 }
 
+# Reference files to auto-inject per role
+ROLE_INJECTIONS = {
+    "generator": [
+        "generator-recovery-protocol.md",
+        "failure-modes.md",
+    ],
+}
+
 
 def build_role_prompt(
     role: str,
     prompts_dir: Path,
     replacements: dict,
+    references_dir: Optional[Path] = None,
+    append_sections: Optional[list] = None,
 ) -> str:
-    """Load a prompt template and apply placeholder substitutions.
+    """Load a prompt template, apply placeholders, and append reference sections.
 
     Args:
         role: Role name (e.g., "architect", "adversary")
         prompts_dir: Directory containing prompt .md files
         replacements: Dict of {{PLACEHOLDER}} -> value
+        references_dir: Directory containing reference .md files for injection
+        append_sections: List of reference filenames to append (e.g., ["failure-modes.md"])
+            If None, uses ROLE_INJECTIONS defaults for the role.
 
     Returns:
-        The prompt string with all placeholders replaced.
+        The prompt string with placeholders replaced and references appended.
     """
     prompts_dir = Path(prompts_dir)
     prompt_path = prompts_dir / f"{role}.md"
@@ -55,6 +68,15 @@ def build_role_prompt(
     content = prompt_path.read_text()
     for placeholder, value in replacements.items():
         content = content.replace(placeholder, value)
+
+    # Append reference sections
+    sections = append_sections if append_sections is not None else ROLE_INJECTIONS.get(role, [])
+    if sections and references_dir:
+        references_dir = Path(references_dir)
+        for section_file in sections:
+            section_path = references_dir / section_file
+            if section_path.exists():
+                content += f"\n\n---\n\n{section_path.read_text()}"
 
     return content
 
