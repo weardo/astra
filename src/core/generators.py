@@ -234,7 +234,7 @@ def generate_astra_yaml(detection: dict) -> str:
             "test_command": test_cmd,
         },
         "parallel": {
-            "enabled": False,
+            "enabled": True,
             "max_workers": 3,
         },
         "pr": {
