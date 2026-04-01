@@ -2,7 +2,6 @@
 
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -58,6 +57,18 @@ class TestCLIInit:
         action = json.loads(result.stdout)
         assert action["role"] == "generator"
 
+    def test_init_returns_run_dir(self, tmp_path):
+        result = run_cli(
+            "init",
+            "--data-dir", str(tmp_path / ".astra"),
+            "--prompt", "test",
+            "--detection", '{"stack": "python"}',
+        )
+        action = json.loads(result.stdout)
+        assert "run_dir" in action
+        run_dir = Path(action["run_dir"])
+        assert run_dir.exists()
+
     def test_init_creates_state_file(self, tmp_path):
         result = run_cli(
             "init",
@@ -65,31 +76,35 @@ class TestCLIInit:
             "--prompt", "test",
             "--detection", '{"stack": "python"}',
         )
-        # State file now lives in run_dir (per-run), not data_dir
-        import json
         action = json.loads(result.stdout)
-        # Find the run dir from the current symlink
-        current_link = tmp_path / ".astra" / "runs" / "current"
-        assert current_link.exists()
-        run_dir = current_link.resolve()
+        run_dir = Path(action["run_dir"])
         state_file = run_dir / ".orchestrator_state.json"
         assert state_file.exists()
 
+    def test_init_does_not_create_current_symlink(self, tmp_path):
+        run_cli(
+            "init",
+            "--data-dir", str(tmp_path / ".astra"),
+            "--prompt", "test",
+            "--detection", '{"stack": "python"}',
+        )
+        assert not (tmp_path / ".astra" / "runs" / "current").exists()
+
 
 class TestCLIRecord:
-    def _init_and_get_state(self, tmp_path):
-        """Init and return state file path."""
-        run_cli(
+    def _init_and_get_run_dir(self, tmp_path):
+        """Init and return run_dir path."""
+        result = run_cli(
             "init",
             "--data-dir", str(tmp_path / ".astra"),
             "--prompt", "Build a todo app",
             "--detection", '{"stack": "typescript", "test_command": "npm test"}',
         )
-        return tmp_path / ".astra" / ".orchestrator_state.json"
+        action = json.loads(result.stdout)
+        return action["run_dir"]
 
     def test_record_returns_next_action(self, tmp_path):
-        self._init_and_get_state(tmp_path)
-        # Architect output with a work plan
+        run_dir = self._init_and_get_run_dir(tmp_path)
         work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
             "stories": [{"id": "s1", "name": "S", "tasks": [
                 {"id": f"t{i}", "description": f"Task {i}", "acceptance_criteria": ["ac"],
@@ -101,6 +116,7 @@ class TestCLIRecord:
         result = run_cli(
             "record",
             "--data-dir", str(tmp_path / ".astra"),
+            "--run-dir", run_dir,
             "--role", "architect",
             "--output", json.dumps(work_plan),
         )
@@ -109,8 +125,7 @@ class TestCLIRecord:
         assert action["action"] == "dispatch_agent"
 
     def test_record_with_task_verdict(self, tmp_path):
-        self._init_and_get_state(tmp_path)
-        # Fast-track to generator: small plan
+        run_dir = self._init_and_get_run_dir(tmp_path)
         work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
             "stories": [{"id": "s1", "name": "S", "tasks": [
                 {"id": "t1", "description": "X", "acceptance_criteria": ["ac"],
@@ -118,15 +133,19 @@ class TestCLIRecord:
                  "status": "pending", "attempts": 0, "blocked_reason": None}
             ]}]}]}]}
         run_cli("record", "--data-dir", str(tmp_path / ".astra"),
+                "--run-dir", run_dir,
                 "--role", "architect", "--output", json.dumps(work_plan))
         run_cli("record", "--data-dir", str(tmp_path / ".astra"),
+                "--run-dir", run_dir,
                 "--role", "validator", "--output", '{"valid": true}')
         run_cli("record-hitl", "--data-dir", str(tmp_path / ".astra"),
+                "--run-dir", run_dir,
                 "--gate", "post_plan", "--decision", "continue")
 
         result = run_cli(
             "record",
             "--data-dir", str(tmp_path / ".astra"),
+            "--run-dir", run_dir,
             "--role", "generator",
             "--output", "done",
             "--task-id", "t1",
@@ -139,8 +158,10 @@ class TestCLIRecord:
 
 class TestCLIRecordHitl:
     def test_record_hitl_continue(self, tmp_path):
-        run_cli("init", "--data-dir", str(tmp_path / ".astra"),
+        result = run_cli("init", "--data-dir", str(tmp_path / ".astra"),
                 "--prompt", "test", "--detection", '{"stack": "python"}')
+        run_dir = json.loads(result.stdout)["run_dir"]
+
         work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
             "stories": [{"id": "s1", "name": "S", "tasks": [
                 {"id": "t1", "description": "X", "acceptance_criteria": ["ac"],
@@ -148,13 +169,16 @@ class TestCLIRecordHitl:
                  "status": "pending", "attempts": 0, "blocked_reason": None}
             ]}]}]}]}
         run_cli("record", "--data-dir", str(tmp_path / ".astra"),
+                "--run-dir", run_dir,
                 "--role", "architect", "--output", json.dumps(work_plan))
         run_cli("record", "--data-dir", str(tmp_path / ".astra"),
+                "--run-dir", run_dir,
                 "--role", "validator", "--output", '{"valid": true}')
 
         result = run_cli(
             "record-hitl",
             "--data-dir", str(tmp_path / ".astra"),
+            "--run-dir", run_dir,
             "--gate", "post_plan",
             "--decision", "continue",
         )
@@ -164,8 +188,10 @@ class TestCLIRecordHitl:
         assert action["role"] == "generator"
 
     def test_record_hitl_abort(self, tmp_path):
-        run_cli("init", "--data-dir", str(tmp_path / ".astra"),
+        result = run_cli("init", "--data-dir", str(tmp_path / ".astra"),
                 "--prompt", "test", "--detection", '{"stack": "go"}')
+        run_dir = json.loads(result.stdout)["run_dir"]
+
         work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
             "stories": [{"id": "s1", "name": "S", "tasks": [
                 {"id": "t1", "description": "X", "acceptance_criteria": ["ac"],
@@ -173,13 +199,16 @@ class TestCLIRecordHitl:
                  "status": "pending", "attempts": 0, "blocked_reason": None}
             ]}]}]}]}
         run_cli("record", "--data-dir", str(tmp_path / ".astra"),
+                "--run-dir", run_dir,
                 "--role", "architect", "--output", json.dumps(work_plan))
         run_cli("record", "--data-dir", str(tmp_path / ".astra"),
+                "--run-dir", run_dir,
                 "--role", "validator", "--output", '{"valid": true}')
 
         result = run_cli(
             "record-hitl",
             "--data-dir", str(tmp_path / ".astra"),
+            "--run-dir", run_dir,
             "--gate", "post_plan",
             "--decision", "abort",
         )

@@ -68,7 +68,7 @@ def _load_state(data_dir: Path, orch: Orchestrator, run_dir: Path = None) -> Non
     if run_dir is None:
         from .runs import RunManager
         rm = RunManager(data_dir)
-        run_dir = rm.get_current()
+        run_dir = rm.get_latest()
     if run_dir is None:
         return
     state_path = run_dir / STATE_FILE
@@ -172,7 +172,7 @@ def cmd_resume(args):
     if run_dir is None:
         from .runs import RunManager
         rm = RunManager(data_dir)
-        run_dir = rm.get_current()
+        run_dir = rm.get_latest()
         if run_dir is None:
             print(json.dumps({"action": "error", "message": "No current run to resume"}))
             return

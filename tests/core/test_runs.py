@@ -1,10 +1,8 @@
 """Tests for RunManager — ported from harness-dev, adapted for plugin data_dir convention."""
 
 import json
-import os
 import re
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -21,10 +19,6 @@ class TestRunManagerSkeleton:
     def test_runs_dir_property(self, tmp_path):
         rm = RunManager(tmp_path / ".astra")
         assert rm.runs_dir == tmp_path / ".astra" / "runs"
-
-    def test_current_link_property(self, tmp_path):
-        rm = RunManager(tmp_path / ".astra")
-        assert rm.current_link == tmp_path / ".astra" / "runs" / "current"
 
     def test_init_creates_runs_dir(self, tmp_path):
         RunManager(tmp_path / ".astra")
@@ -50,7 +44,6 @@ class TestNextSequenceNumber:
         assert rm._next_sequence_number() == 4
 
     def test_non_conforming_names_ignored(self, rm):
-        (rm.runs_dir / "current").mkdir()
         (rm.runs_dir / "some-random-dir").mkdir()
         assert rm._next_sequence_number() == 1
 
@@ -88,15 +81,10 @@ class TestCreateRun:
         seq2 = int(run2.name.split("-")[0])
         assert seq2 == seq1 + 1
 
-    def test_current_symlink_updated_after_create(self, rm):
-        run_dir = rm.create_run("feature")
-        assert rm.current_link.is_symlink()
-        assert rm.current_link.resolve() == run_dir.resolve()
-
-    def test_two_runs_current_points_to_second(self, rm):
+    def test_no_symlink_created(self, rm):
+        """create_run does NOT create a current symlink."""
         rm.create_run("feature")
-        run2 = rm.create_run("bugfix")
-        assert rm.current_link.resolve() == run2.resolve()
+        assert not (rm.runs_dir / "current").exists()
 
     def test_sequence_beyond_999_zero_pad_dropped(self, rm):
         (rm.runs_dir / "999-feature-20260101-0000").mkdir()
@@ -137,69 +125,28 @@ class TestCreateRun:
         assert call_count["n"] >= 2
 
 
-class TestSetCurrent:
-    def test_creates_symlink(self, rm):
-        run_dir = rm.runs_dir / "001-feature-20260331-0000"
-        run_dir.mkdir()
-        rm.set_current(run_dir)
-        assert rm.current_link.is_symlink()
+class TestGetLatest:
+    def test_returns_none_when_no_runs(self, rm):
+        assert rm.get_latest() is None
 
-    def test_symlink_is_relative(self, rm):
-        run_dir = rm.runs_dir / "001-feature-20260331-0000"
-        run_dir.mkdir()
-        rm.set_current(run_dir)
-        assert not os.path.isabs(os.readlink(rm.current_link))
+    def test_returns_only_run(self, rm):
+        run_dir = rm.create_run("feature")
+        assert rm.get_latest() == run_dir
 
-    def test_replaces_existing_symlink(self, rm):
-        run1 = rm.runs_dir / "001-feature-20260331-0000"
-        run2 = rm.runs_dir / "002-bugfix-20260331-0100"
-        run1.mkdir()
-        run2.mkdir()
-        rm.set_current(run1)
-        rm.set_current(run2)
-        assert rm.current_link.resolve() == run2.resolve()
+    def test_returns_highest_sequence(self, rm):
+        rm.create_run("feature")
+        run2 = rm.create_run("feature")
+        assert rm.get_latest() == run2
 
-    def test_replacement_preserves_old_dir(self, rm):
-        run1 = rm.runs_dir / "001-feature-20260331-0000"
-        run2 = rm.runs_dir / "002-bugfix-20260331-0100"
-        run1.mkdir()
-        run2.mkdir()
-        (run1 / "marker.txt").write_text("sentinel")
-        rm.set_current(run1)
-        rm.set_current(run2)
-        assert run1.is_dir()
-        assert (run1 / "marker.txt").read_text() == "sentinel"
-
-    def test_no_tmp_artifact_left(self, rm):
-        run_dir = rm.runs_dir / "001-feature-20260331-0000"
-        run_dir.mkdir()
-        rm.set_current(run_dir)
-        assert not (rm.runs_dir / "current.tmp").exists()
-
-
-class TestGetCurrent:
-    def test_returns_none_when_no_symlink(self, rm):
-        assert rm.get_current() is None
-
-    def test_returns_resolved_path(self, rm):
-        run_dir = rm.runs_dir / "001-feature-20260331-0000"
-        run_dir.mkdir()
-        rm.set_current(run_dir)
-        assert rm.get_current() == run_dir
-
-    def test_returns_none_for_dangling_symlink(self, rm):
-        run_dir = rm.runs_dir / "001-feature-20260331-0000"
-        run_dir.mkdir()
-        rm.set_current(run_dir)
-        run_dir.rmdir()
-        assert rm.get_current() is None
+    def test_ignores_non_run_dirs(self, rm):
+        run_dir = rm.create_run("feature")
+        (rm.runs_dir / "some-random-dir").mkdir()
+        assert rm.get_latest() == run_dir
 
 
 class TestResolveRun:
-    def test_none_delegates_to_get_current(self, rm):
-        run_dir = rm.runs_dir / "001-feature-20260331-0000"
-        run_dir.mkdir()
-        rm.set_current(run_dir)
+    def test_none_delegates_to_get_latest(self, rm):
+        run_dir = rm.create_run("feature")
         assert rm.resolve_run(None) == run_dir
 
     def test_numeric_prefix_match(self, rm):
@@ -234,7 +181,7 @@ class TestListRuns:
         assert "id" in runs[0]
         assert "name" in runs[0]
         assert "path" in runs[0]
-        assert "is_current" in runs[0]
+        assert "is_latest" in runs[0]
         assert "strategy" in runs[0]
 
     def test_sorted_by_sequence(self, rm):
@@ -245,12 +192,13 @@ class TestListRuns:
         seqs = [int(r["id"]) for r in runs]
         assert seqs == sorted(seqs)
 
-    def test_is_current_true_for_current_run(self, rm):
-        run_dir = rm.create_run("feature")
+    def test_is_latest_true_for_latest_run(self, rm):
+        rm.create_run("feature")
+        run2 = rm.create_run("feature")
         runs = rm.list_runs()
-        current_entries = [r for r in runs if r["is_current"]]
-        assert len(current_entries) == 1
-        assert current_entries[0]["name"] == run_dir.name
+        latest_entries = [r for r in runs if r["is_latest"]]
+        assert len(latest_entries) == 1
+        assert latest_entries[0]["name"] == run2.name
 
     def test_corrupt_state_json_does_not_raise(self, rm):
         run_dir = rm.create_run("feature")
@@ -271,7 +219,6 @@ class TestListRuns:
         assert runs[0]["phase"] == "planning"
 
     def test_non_run_dirs_excluded(self, rm):
-        (rm.runs_dir / "current").mkdir()
         (rm.runs_dir / "some-dir").mkdir()
         assert rm.list_runs() == []
 
@@ -314,14 +261,12 @@ class TestPruneRuns:
         assert runs[3].exists()
         assert runs[4].exists()
 
-    def test_current_run_protected_from_deletion(self, rm):
-        old_run = rm.create_run("feature")
-        for _ in range(4):
-            rm.create_run("feature")
-        rm.set_current(old_run)
+    def test_latest_run_protected_from_deletion(self, rm):
+        """Latest run is always protected even if it would be pruned by age."""
+        runs = [rm.create_run("feature") for _ in range(5)]
         pruned = rm.prune_runs(keep=3)
-        assert pruned == 1
-        assert old_run.exists()
+        # Latest (runs[4]) must survive
+        assert runs[4].exists()
 
     def test_pruned_directories_no_longer_exist(self, rm):
         runs = [rm.create_run("feature") for _ in range(4)]
@@ -401,10 +346,10 @@ class TestMigrateLegacyState:
         copied = json.loads((result / "state.json").read_text())
         assert copied == orig
 
-    def test_symlink_updated_to_new_run(self, rm):
+    def test_migrated_run_is_latest(self, rm):
         self._make_legacy(rm)
         result = rm.migrate_legacy_state()
-        assert rm.get_current().resolve() == result.resolve()
+        assert rm.get_latest().resolve() == result.resolve()
 
     def test_source_dir_not_deleted(self, rm):
         legacy = self._make_legacy(rm)

@@ -12,7 +12,6 @@ Ported from harness-dev, adapted for plugin data_dir convention.
 import datetime
 import json
 import logging
-import os
 import re
 import shutil
 from pathlib import Path
@@ -33,21 +32,8 @@ class RunManager:
     def runs_dir(self) -> Path:
         return self._data_dir / "runs"
 
-    @property
-    def current_link(self) -> Path:
-        return self.runs_dir / "current"
-
-    def set_current(self, run_dir: Path) -> None:
-        """Atomically update the 'current' symlink to point at run_dir."""
-        tmp_link = self.runs_dir / "current.tmp"
-        if tmp_link.exists() or tmp_link.is_symlink():
-            tmp_link.unlink()
-        os.symlink(run_dir.name, tmp_link)
-        os.rename(tmp_link, self.current_link)
-        logger.info("Updated current symlink -> %s", run_dir.name)
-
     def create_run(self, strategy: str) -> Path:
-        """Create a new timestamped run directory and update the current symlink."""
+        """Create a new timestamped run directory."""
         strategy_slug = strategy.lower()
         for _ in range(3):
             seq = self._next_sequence_number()
@@ -60,29 +46,30 @@ class RunManager:
             except FileExistsError:
                 continue
             logger.info("Created run directory: %s", run_dir.name)
-            self.set_current(run_dir)
             return run_dir
         raise RuntimeError("Failed to create a unique run directory after 3 attempts")
 
-    def get_current(self) -> Optional[Path]:
-        """Return resolved Path of the current run, or None if missing/dangling."""
-        link = self.current_link
-        if not link.is_symlink():
-            return None
-        target = self.runs_dir / os.readlink(link)
-        if not target.exists():
-            logger.warning("current symlink points to missing target: %s", target.name)
-            return None
-        try:
-            target.resolve().relative_to(self.runs_dir.resolve())
-        except ValueError:
-            return None
-        return target
+    def get_latest(self) -> Optional[Path]:
+        """Return the run directory with the highest sequence number."""
+        best_seq = -1
+        best_dir = None
+        for entry in self.runs_dir.iterdir():
+            if not entry.is_dir():
+                continue
+            prefix = entry.name.split("-")[0]
+            try:
+                seq = int(prefix)
+            except ValueError:
+                continue
+            if seq > best_seq:
+                best_seq = seq
+                best_dir = entry
+        return best_dir
 
     def resolve_run(self, run_id: Optional[str]) -> Optional[Path]:
         """Resolve a run_id string to its directory Path."""
         if run_id is None:
-            return self.get_current()
+            return self.get_latest()
         pattern = re.compile(r"^[0-9]{1,}(-[a-z0-9-]+)?$")
         if not pattern.match(run_id):
             logger.warning("Invalid run_id format: %s", run_id)
@@ -96,7 +83,7 @@ class RunManager:
 
     def list_runs(self) -> list:
         """Return all run directories as metadata dicts, sorted by sequence number."""
-        current = self.get_current()
+        latest = self.get_latest()
         runs = []
         for entry in self.runs_dir.iterdir():
             if not entry.is_dir():
@@ -110,7 +97,7 @@ class RunManager:
                 "id": prefix,
                 "name": entry.name,
                 "path": entry,
-                "is_current": current is not None and entry.resolve() == current.resolve(),
+                "is_latest": latest is not None and entry.resolve() == latest.resolve(),
                 "strategy": None,
                 "created_at": None,
                 "phase": None,
@@ -144,16 +131,16 @@ class RunManager:
         return result
 
     def prune_runs(self, keep: int = 20) -> int:
-        """Delete oldest run directories beyond keep total, protecting the current run."""
+        """Delete oldest run directories beyond keep total, protecting the latest run."""
         runs = self.list_runs()
         if len(runs) <= keep:
             return 0
-        current = self.get_current()
+        latest = self.get_latest()
         to_delete = runs[: len(runs) - keep]
         pruned = 0
         for meta in to_delete:
             run_path: Path = meta["path"]
-            if current is not None and run_path.resolve() == current.resolve():
+            if latest is not None and run_path.resolve() == latest.resolve():
                 continue
             shutil.rmtree(run_path)
             logger.info("Pruned run directory: %s", run_path.name)
