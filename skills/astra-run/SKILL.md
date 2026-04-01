@@ -52,7 +52,12 @@ Repeat until `action` is `complete` or `error`:
      ```
    For example: role "architect" → `subagent_type="astra:architect"`, role "generator" → `subagent_type="astra:generator"`, role "test-runner" → `subagent_type="astra:test-runner"`
 3. Save agent output to `action.save_output_to`
-4. Get next action:
+4. **If the agent ran with `isolation: "worktree"` and made changes**, merge the worktree branch back:
+   ```bash
+   git merge --no-ff <worktree-branch> -m "Merge task <task_id>"
+   ```
+   If merge conflicts, abort (`git merge --abort`) and set verdict to FAIL.
+5. Get next action:
 ```bash
 PYTHONPATH=${CLAUDE_PLUGIN_ROOT} python3 -m src.core record \
   --data-dir .astra \

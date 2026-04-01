@@ -161,6 +161,16 @@ class TestOrchestratorGeneratorLoop:
         assert action["role"] == "generator"
         # Same task, retry
 
+    def test_verdict_case_insensitive(self, orch):
+        """Lowercase/mixed-case verdicts are normalized to uppercase."""
+        self._setup_generator_phase(orch)
+        action = orch.record(role="generator", output="done", task_id="t1", verdict="pass")
+        # Should advance to t2, not loop on t1
+        assert action["action"] == "dispatch_agent"
+        assert action["role"] == "generator"
+        # t1 should be done
+        assert orch._work_plan.get_task("t1")["status"] == "done"
+
     def test_hitl_abort_returns_complete(self, orch):
         orch.init(prompt="test", detection={"stack": "typescript"})
         work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",

@@ -444,6 +444,10 @@ class Orchestrator:
                 "data": status,
             })
 
+        # Normalize verdict to uppercase
+        if verdict:
+            verdict = verdict.upper()
+
         # Increment iteration count
         self._iteration_count += 1
 
@@ -578,6 +582,8 @@ class Orchestrator:
     def _handle_evaluator_output(
         self, task_id: Optional[str], role: str, verdict: Optional[str], output: str
     ) -> dict:
+        if verdict:
+            verdict = verdict.upper()
         self._current_task_verdicts.append({
             "agent": role,
             "verdict": verdict or "PASS",
