@@ -25,6 +25,8 @@ def generate_claude_md(detection: dict, insights: Optional[dict] = None) -> str:
         CLAUDE.md content string, <=200 lines.
     """
     stack = detection.get("stack", "unknown")
+    if isinstance(stack, list):
+        stack = stack[0] if stack else "unknown"
     project_name = detection.get("project_name", "Project")
     test_cmd = detection.get("test_command", "")
     build_cmd = detection.get("build_command", "")
@@ -131,6 +133,8 @@ def generate_agents_md(detection: dict) -> str:
     """
     project_name = detection.get("project_name", "Project")
     stack = detection.get("stack", "unknown")
+    if isinstance(stack, list):
+        stack = stack[0] if stack else "unknown"
     test_cmd = detection.get("test_command", "")
     build_cmd = detection.get("build_command", "")
 
@@ -212,6 +216,8 @@ def generate_goal_md(
 def generate_astra_yaml(detection: dict) -> str:
     """Generate an astra.yaml config from detection results."""
     stack = detection.get("stack", "unknown")
+    if isinstance(stack, list):
+        stack = stack[0] if stack else "unknown"
     test_cmd = detection.get("test_command", "")
 
     config = {
