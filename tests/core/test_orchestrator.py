@@ -259,6 +259,21 @@ class TestCombineVerdicts:
 
 
 class TestParallelDispatch:
+    def _make_parallel_plan(self):
+        """Work plan with 3 independent tasks (no deps)."""
+        return {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
+            "stories": [{"id": "s1", "name": "S", "tasks": [
+                {"id": "t1", "description": "Add auth module", "acceptance_criteria": ["ac"],
+                 "steps": [], "depends_on": [], "target_files": ["a.ts"],
+                 "status": "pending", "attempts": 0, "blocked_reason": None},
+                {"id": "t2", "description": "Add logging module", "acceptance_criteria": ["ac"],
+                 "steps": [], "depends_on": [], "target_files": ["b.ts"],
+                 "status": "pending", "attempts": 0, "blocked_reason": None},
+                {"id": "t3", "description": "Add config module", "acceptance_criteria": ["ac"],
+                 "steps": [], "depends_on": [], "target_files": ["c.ts"],
+                 "status": "pending", "attempts": 0, "blocked_reason": None},
+            ]}]}]}]}
+
     def test_parallel_config_respected(self, orch):
         """Parallel config is accessible."""
         orch._config["parallel"] = {"enabled": True, "max_workers": 3}
@@ -269,21 +284,124 @@ class TestParallelDispatch:
         """Default config has parallel disabled → sequential dispatch."""
         orch._config["parallel"] = {"enabled": False}
         orch.init(prompt="test", detection={"stack": "typescript"})
-        work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
+        orch.record(role="architect", output=json.dumps(self._make_parallel_plan()))
+        orch.record(role="validator", output='{"valid": true}')
+        action = orch.record_hitl(gate="post_plan", decision="continue")
+        # Sequential: dispatches one task at a time
+        assert action["action"] == "dispatch_agent"
+        assert action["role"] == "generator"
+
+    def test_batch_dispatch_when_parallel_enabled(self, orch):
+        """Parallel enabled + multiple independent tasks → dispatch_batch."""
+        orch._config["parallel"] = {"enabled": True, "max_workers": 3}
+        orch.init(prompt="test", detection={"stack": "typescript"})
+        orch.record(role="architect", output=json.dumps(self._make_parallel_plan()))
+        orch.record(role="validator", output='{"valid": true}')
+        action = orch.record_hitl(gate="post_plan", decision="continue")
+        assert action["action"] == "dispatch_batch"
+        assert len(action["agents"]) == 3
+        task_ids = {a["task_id"] for a in action["agents"]}
+        assert task_ids == {"t1", "t2", "t3"}
+
+    def test_batch_respects_max_workers(self, orch):
+        """Batch size is capped by max_workers."""
+        orch._config["parallel"] = {"enabled": True, "max_workers": 2}
+        orch.init(prompt="test", detection={"stack": "typescript"})
+        orch.record(role="architect", output=json.dumps(self._make_parallel_plan()))
+        orch.record(role="validator", output='{"valid": true}')
+        action = orch.record_hitl(gate="post_plan", decision="continue")
+        assert action["action"] == "dispatch_batch"
+        assert len(action["agents"]) == 2
+
+    def test_batch_agents_have_prompt_files(self, orch):
+        """Each agent in a batch has a prompt_file on disk."""
+        orch._config["parallel"] = {"enabled": True, "max_workers": 3}
+        orch.init(prompt="test", detection={"stack": "typescript"})
+        orch.record(role="architect", output=json.dumps(self._make_parallel_plan()))
+        orch.record(role="validator", output='{"valid": true}')
+        action = orch.record_hitl(gate="post_plan", decision="continue")
+        for agent in action["agents"]:
+            assert Path(agent["prompt_file"]).exists()
+
+    def test_batch_falls_back_to_single_when_one_ready(self, orch):
+        """Parallel enabled but only 1 task ready → dispatch_agent, not batch."""
+        orch._config["parallel"] = {"enabled": True, "max_workers": 3}
+        plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
             "stories": [{"id": "s1", "name": "S", "tasks": [
-                {"id": "t1", "description": "A", "acceptance_criteria": ["ac"],
+                {"id": "t1", "description": "Add base", "acceptance_criteria": ["ac"],
                  "steps": [], "depends_on": [], "target_files": ["a.ts"],
                  "status": "pending", "attempts": 0, "blocked_reason": None},
-                {"id": "t2", "description": "B", "acceptance_criteria": ["ac"],
+                {"id": "t2", "description": "Add extension", "acceptance_criteria": ["ac"],
+                 "steps": [], "depends_on": ["t1"], "target_files": ["b.ts"],
+                 "status": "pending", "attempts": 0, "blocked_reason": None},
+            ]}]}]}]}
+        orch.init(prompt="test", detection={"stack": "typescript"})
+        orch.record(role="architect", output=json.dumps(plan))
+        orch.record(role="validator", output='{"valid": true}')
+        action = orch.record_hitl(gate="post_plan", decision="continue")
+        # Only t1 is ready (t2 depends on t1), so single dispatch
+        assert action["action"] == "dispatch_agent"
+        assert action["task_id"] == "t1"
+
+    def test_sequential_after_parallel_batch(self, orch):
+        """After batch completes, orchestrator continues normally."""
+        orch._config["parallel"] = {"enabled": True, "max_workers": 3}
+        orch.init(prompt="test", detection={"stack": "typescript"})
+        orch.record(role="architect", output=json.dumps(self._make_parallel_plan()))
+        orch.record(role="validator", output='{"valid": true}')
+        orch.record_hitl(gate="post_plan", decision="continue")
+        # Record all 3 tasks as PASS
+        orch.record(role="generator", output="done", task_id="t1", verdict="PASS")
+        orch.record(role="generator", output="done", task_id="t2", verdict="PASS")
+        action = orch.record(role="generator", output="done", task_id="t3", verdict="PASS")
+        assert action["action"] == "complete"
+
+
+class TestWorktreeIsolation:
+    def _setup_and_dispatch(self, orch, task_description="Create auth handler"):
+        """Get to generator dispatch with a given task description."""
+        orch.init(prompt="test", detection={"stack": "typescript"})
+        work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
+            "stories": [{"id": "s1", "name": "S", "tasks": [
+                {"id": "t1", "description": task_description, "acceptance_criteria": ["ac"],
+                 "steps": [], "depends_on": [], "target_files": ["src/handler.ts"],
+                 "status": "pending", "attempts": 0, "blocked_reason": None},
+            ]}]}]}]}
+        orch.record(role="architect", output=json.dumps(work_plan))
+        orch.record(role="validator", output='{"valid": true}')
+        return orch.record_hitl(gate="post_plan", decision="continue")
+
+    def test_write_heavy_task_gets_worktree_isolation(self, orch):
+        """Tasks that modify files get isolation: worktree."""
+        action = self._setup_and_dispatch(orch, "Create auth handler")
+        assert action["action"] == "dispatch_agent"
+        assert action.get("isolation") == "worktree"
+
+    def test_read_only_task_no_isolation(self, orch):
+        """Tasks with read-only keywords don't get worktree isolation."""
+        action = self._setup_and_dispatch(orch, "Review and validate the auth module")
+        assert action["action"] == "dispatch_agent"
+        assert "isolation" not in action
+
+    def test_batch_agents_have_isolation(self, orch):
+        """Batch dispatch also passes isolation hints per agent."""
+        orch._config["parallel"] = {"enabled": True, "max_workers": 3}
+        orch.init(prompt="test", detection={"stack": "typescript"})
+        work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
+            "stories": [{"id": "s1", "name": "S", "tasks": [
+                {"id": "t1", "description": "Add auth module", "acceptance_criteria": ["ac"],
+                 "steps": [], "depends_on": [], "target_files": ["a.ts"],
+                 "status": "pending", "attempts": 0, "blocked_reason": None},
+                {"id": "t2", "description": "Add logging module", "acceptance_criteria": ["ac"],
                  "steps": [], "depends_on": [], "target_files": ["b.ts"],
                  "status": "pending", "attempts": 0, "blocked_reason": None},
             ]}]}]}]}
         orch.record(role="architect", output=json.dumps(work_plan))
         orch.record(role="validator", output='{"valid": true}')
         action = orch.record_hitl(gate="post_plan", decision="continue")
-        # Sequential: dispatches one task at a time
-        assert action["action"] == "dispatch_agent"
-        assert action["role"] == "generator"
+        assert action["action"] == "dispatch_batch"
+        for agent in action["agents"]:
+            assert agent.get("isolation") == "worktree"
 
 
 class TestScopedContext:

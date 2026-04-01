@@ -167,6 +167,76 @@ class TestGetNextTask:
         assert wp.get_next_task()["id"] == "t1"
 
 
+class TestGetReadyTasks:
+    def test_returns_all_independent_tasks(self):
+        wp = make_plan([[make_task("t1"), make_task("t2"), make_task("t3")]])
+        ready = wp.get_ready_tasks()
+        assert len(ready) == 3
+        ids = {t["id"] for t in ready}
+        assert ids == {"t1", "t2", "t3"}
+
+    def test_returns_only_satisfied_deps(self):
+        wp = make_plan([[
+            make_task("t1"),
+            make_task("t2", depends_on=["t1"]),
+            make_task("t3"),
+        ]])
+        ready = wp.get_ready_tasks()
+        ids = {t["id"] for t in ready}
+        assert ids == {"t1", "t3"}
+
+    def test_returns_empty_when_all_done(self):
+        wp = make_plan([[make_task("t1", status="done")]])
+        assert wp.get_ready_tasks() == []
+
+    def test_respects_phase_gate(self):
+        wp = make_plan([
+            [make_task("t1")],
+            [make_task("t2"), make_task("t3")],
+        ])
+        ready = wp.get_ready_tasks()
+        assert len(ready) == 1
+        assert ready[0]["id"] == "t1"
+
+    def test_phase_gate_opens_returns_all_ready(self):
+        wp = make_plan([
+            [make_task("t1", status="done")],
+            [make_task("t2"), make_task("t3")],
+        ])
+        ready = wp.get_ready_tasks()
+        ids = {t["id"] for t in ready}
+        assert ids == {"t2", "t3"}
+
+    def test_diamond_returns_root_only(self):
+        wp = make_plan([[
+            make_task("t1"),
+            make_task("t2", depends_on=["t1"]),
+            make_task("t3", depends_on=["t1"]),
+            make_task("t4", depends_on=["t2", "t3"]),
+        ]])
+        ready = wp.get_ready_tasks()
+        assert len(ready) == 1
+        assert ready[0]["id"] == "t1"
+
+    def test_diamond_after_root_done(self):
+        wp = make_plan([[
+            make_task("t1", status="done"),
+            make_task("t2", depends_on=["t1"]),
+            make_task("t3", depends_on=["t1"]),
+            make_task("t4", depends_on=["t2", "t3"]),
+        ]])
+        ready = wp.get_ready_tasks()
+        ids = {t["id"] for t in ready}
+        assert ids == {"t2", "t3"}
+
+    def test_get_next_task_consistent_with_ready(self):
+        """get_next_task returns the first element of get_ready_tasks."""
+        wp = make_plan([[make_task("t1"), make_task("t2")]])
+        ready = wp.get_ready_tasks()
+        next_task = wp.get_next_task()
+        assert next_task["id"] == ready[0]["id"]
+
+
 class TestMarkTaskDone:
     def test_marks_done_and_saves(self, tmp_dir):
         wp = make_plan([[make_task("task-001")]])

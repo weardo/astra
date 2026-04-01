@@ -314,8 +314,8 @@ class Orchestrator:
         return self._dispatch_next_task()
 
     def _dispatch_next_task(self) -> dict:
-        task = self._work_plan.get_next_task()
-        if task is None:
+        ready_tasks = self._work_plan.get_ready_tasks()
+        if not ready_tasks:
             self._cleanup()
             result = {
                 "action": "complete",
@@ -337,6 +337,18 @@ class Orchestrator:
                 }
             return result
 
+        # Parallel dispatch: if enabled and multiple tasks are ready
+        parallel_config = self._config.get("parallel", {})
+        if parallel_config.get("enabled") and len(ready_tasks) > 1:
+            max_workers = parallel_config.get("max_workers", 3)
+            batch_tasks = ready_tasks[:max_workers]
+            return self._dispatch_batch(batch_tasks)
+
+        # Sequential: dispatch first ready task
+        return self._dispatch_single_task(ready_tasks[0])
+
+    def _dispatch_single_task(self, task: dict) -> dict:
+        """Build a dispatch_agent action for a single task."""
         # Write current_task.json
         task_path = self.run_dir / "current_task.json"
         task_path.write_text(json.dumps(task, indent=2))
@@ -372,6 +384,41 @@ class Orchestrator:
             action["isolation"] = "worktree"
 
         return action
+
+    def _dispatch_batch(self, tasks: list) -> dict:
+        """Build a dispatch_batch action for parallel execution."""
+        agents = []
+        for task in tasks:
+            self._store.append({
+                "type": "task_started",
+                "data": {"task_id": task["id"], "title": task.get("description", "")},
+            })
+
+            replacements = self._build_generator_replacements(task)
+            prompt = build_role_prompt(
+                "generator", self._prompts_dir, replacements,
+                references_dir=self._references_dir,
+            )
+            model = resolve_model("generator", self._config)
+
+            prompt_file = self.run_dir / f"prompt_generator_{task['id']}.md"
+            prompt_file.write_text(prompt)
+
+            agent = {
+                "role": "generator",
+                "model": model,
+                "prompt_file": str(prompt_file),
+                "save_output_to": str(self.run_dir / f"generator_{task['id']}.md"),
+                "task_id": task["id"],
+            }
+            if should_use_worktree(task.get("description", "")):
+                agent["isolation"] = "worktree"
+            agents.append(agent)
+
+        return {
+            "action": "dispatch_batch",
+            "agents": agents,
+        }
 
     def _handle_generator_output(
         self, task_id: Optional[str], verdict: Optional[str], output: str

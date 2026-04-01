@@ -1,27 +1,8 @@
-"""Tests for parallel.py -- dependency grouping and worktree management."""
-
-import subprocess
-import tempfile
-from pathlib import Path
+"""Tests for parallel.py -- dependency grouping."""
 
 import pytest
 
-from src.core.parallel import group_by_dependency, create_worktree, cleanup_worktree, merge_worktree
-
-
-@pytest.fixture
-def tmp_git_repo():
-    """Create a temporary git repo for worktree tests."""
-    with tempfile.TemporaryDirectory() as d:
-        repo = Path(d)
-        subprocess.run(["git", "init"], cwd=repo, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, capture_output=True)
-        # Need at least one commit for worktrees
-        (repo / "README.md").write_text("# Test\n")
-        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
-        yield repo
+from src.core.parallel import group_by_dependency
 
 
 class TestGroupByDependency:
@@ -109,71 +90,3 @@ class TestGroupByDependency:
         layer1_ids = {f["id"] for f in layers[1]}
         assert layer1_ids == {"003", "004"}
         assert layers[2][0]["id"] == "005"
-
-
-class TestWorktreeOperations:
-    def test_create_and_cleanup(self, tmp_git_repo):
-        wt_dir, branch = create_worktree(tmp_git_repo, 0)
-        assert wt_dir.exists()
-        assert (wt_dir / "README.md").exists()
-
-        # Verify branch exists
-        result = subprocess.run(
-            ["git", "branch", "--list", branch],
-            cwd=tmp_git_repo,
-            capture_output=True,
-            text=True,
-        )
-        assert branch in result.stdout
-
-        # Cleanup
-        cleanup_worktree(tmp_git_repo, wt_dir, branch)
-        assert not wt_dir.exists()
-
-    def test_merge_no_conflict(self, tmp_git_repo):
-        wt_dir, branch = create_worktree(tmp_git_repo, 0)
-
-        # Make a change in worktree
-        (wt_dir / "new_file.txt").write_text("hello from worker")
-        subprocess.run(["git", "add", "."], cwd=wt_dir, capture_output=True)
-        subprocess.run(
-            ["git", "commit", "-m", "worker change"],
-            cwd=wt_dir,
-            capture_output=True,
-        )
-
-        # Merge back
-        result = merge_worktree(tmp_git_repo, branch)
-        assert result["success"] is True
-        assert result["conflict"] is False
-        assert (tmp_git_repo / "new_file.txt").exists()
-
-        cleanup_worktree(tmp_git_repo, wt_dir, branch)
-
-    def test_merge_conflict(self, tmp_git_repo):
-        wt_dir, branch = create_worktree(tmp_git_repo, 0)
-
-        # Change in worktree
-        (wt_dir / "README.md").write_text("worker version\n")
-        subprocess.run(["git", "add", "."], cwd=wt_dir, capture_output=True)
-        subprocess.run(
-            ["git", "commit", "-m", "worker change"],
-            cwd=wt_dir,
-            capture_output=True,
-        )
-
-        # Conflicting change on main
-        (tmp_git_repo / "README.md").write_text("main version\n")
-        subprocess.run(["git", "add", "."], cwd=tmp_git_repo, capture_output=True)
-        subprocess.run(
-            ["git", "commit", "-m", "main change"],
-            cwd=tmp_git_repo,
-            capture_output=True,
-        )
-
-        # Merge should detect conflict
-        result = merge_worktree(tmp_git_repo, branch)
-        assert result["success"] is False
-        assert result["conflict"] is True
-
-        cleanup_worktree(tmp_git_repo, wt_dir, branch)

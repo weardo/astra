@@ -92,6 +92,15 @@ class WorkPlan:
 
     def get_next_task(self) -> Optional[dict]:
         """Return next pending task respecting dependencies and phase gates."""
+        ready = self.get_ready_tasks()
+        return ready[0] if ready else None
+
+    def get_ready_tasks(self) -> list[dict]:
+        """Return all pending tasks whose dependencies are satisfied.
+
+        Respects phase gates: only returns tasks from the earliest phase
+        that still has pending tasks.
+        """
         for phase in self.data.get("phases", []):
             phase_tasks = [
                 task
@@ -101,13 +110,13 @@ class WorkPlan:
             ]
             has_pending = any(t.get("status", "pending") == "pending" for t in phase_tasks)
             if has_pending:
-                for task in phase_tasks:
-                    if task.get("status", "pending") != "pending":
-                        continue
-                    if self.are_deps_satisfied(task["id"]):
-                        return task
-                return None
-        return None
+                ready = [
+                    task for task in phase_tasks
+                    if task.get("status", "pending") == "pending"
+                    and self.are_deps_satisfied(task["id"])
+                ]
+                return ready
+        return []
 
     # -------------------------------------------------------------------------
     # Task mutations

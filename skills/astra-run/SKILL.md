@@ -40,11 +40,16 @@ Repeat until `action` is `complete` or `error`:
 
 ### If action is `dispatch_agent`
 
-1. Read `action.prompt_file`, `action.model`, `action.role` from the JSON
+1. Read `action.prompt_file`, `action.model`, `action.role`, `action.isolation` from the JSON
 2. Map the role to the correct astra agent:
-   ```
-   Agent(prompt="Read and follow all instructions in {action.prompt_file}", model=action.model, subagent_type="astra:{action.role}")
-   ```
+   - If `action.isolation` is `"worktree"`:
+     ```
+     Agent(prompt="Read and follow all instructions in {action.prompt_file}", model=action.model, subagent_type="astra:{action.role}", isolation="worktree")
+     ```
+   - Otherwise:
+     ```
+     Agent(prompt="Read and follow all instructions in {action.prompt_file}", model=action.model, subagent_type="astra:{action.role}")
+     ```
    For example: role "architect" → `subagent_type="astra:architect"`, role "generator" → `subagent_type="astra:generator"`, role "test-runner" → `subagent_type="astra:test-runner"`
 3. Save agent output to `action.save_output_to`
 4. Get next action:
@@ -56,6 +61,25 @@ PYTHONPATH=${CLAUDE_PLUGIN_ROOT} python3 -m src.core record \
   --task-id "${TASK_ID}" \
   --verdict "${VERDICT}"
 ```
+
+### If action is `dispatch_batch`
+
+The orchestrator returns multiple independent tasks to run in parallel.
+
+1. Read `action.agents` — an array of agent descriptors, each with `prompt_file`, `model`, `role`, `save_output_to`, `task_id`, and optionally `isolation`
+2. Launch ALL agents simultaneously in a single message with multiple Agent tool calls:
+   - For each agent in `action.agents`, dispatch using the same rules as `dispatch_agent` above (including `isolation: "worktree"` when specified)
+3. Collect all outputs
+4. For each completed agent, call `record` sequentially:
+```bash
+PYTHONPATH=${CLAUDE_PLUGIN_ROOT} python3 -m src.core record \
+  --data-dir .astra \
+  --role "${ROLE}" \
+  --output "${OUTPUT}" \
+  --task-id "${TASK_ID}" \
+  --verdict "${VERDICT}"
+```
+5. After the last `record`, use the returned action as normal (it may be another `dispatch_batch`, `dispatch_agent`, `hitl_gate`, etc.)
 
 ### If action is `hitl_gate`
 
