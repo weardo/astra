@@ -212,6 +212,19 @@ class Orchestrator:
     # Planner logic
     # -------------------------------------------------------------------------
 
+    def _planning_dir(self, role: str) -> Path:
+        """Return planning/<seq>-<role>/ directory, creating it."""
+        seq = str(self._planner_index + 1).zfill(3)
+        d = self.run_dir / "planning" / f"{seq}-{role}"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _task_dir(self, task_id: str) -> Path:
+        """Return tasks/<task_id>/ directory, creating it."""
+        d = self.run_dir / "tasks" / task_id
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
     def _dispatch_next_planner_role(self) -> dict:
         if self._planner_index >= len(self._planner_sequence):
             return {"action": "error", "message": "Planner sequence exhausted"}
@@ -223,12 +236,11 @@ class Orchestrator:
             references_dir=self._references_dir,
         )
         model = resolve_model(role, self._config)
-        # Architect/refiner produce JSON work plans, others produce markdown
         ext = ".json" if role in ("architect", "adversary", "refiner", "validator", "fixer", "verifier") else ".md"
-        save_path = str(self.run_dir / f"{role}_output{ext}")
 
-        # Write prompt to file for executor dispatch
-        prompt_file = self.run_dir / f"prompt_{role}.md"
+        plan_dir = self._planning_dir(role)
+        save_path = str(plan_dir / f"output{ext}")
+        prompt_file = plan_dir / "prompt.md"
         prompt_file.write_text(prompt)
 
         return {
@@ -349,9 +361,8 @@ class Orchestrator:
 
     def _dispatch_single_task(self, task: dict) -> dict:
         """Build a dispatch_agent action for a single task."""
-        # Write current_task.json
-        task_path = self.run_dir / "current_task.json"
-        task_path.write_text(json.dumps(task, indent=2))
+        task_dir = self._task_dir(task["id"])
+        (task_dir / "task.json").write_text(json.dumps(task, indent=2))
 
         self._store.append({
             "type": "task_started",
@@ -365,8 +376,7 @@ class Orchestrator:
         )
         model = resolve_model("generator", self._config)
 
-        # Write prompt to file for executor dispatch
-        prompt_file = self.run_dir / f"prompt_generator_{task['id']}.md"
+        prompt_file = task_dir / "prompt.md"
         prompt_file.write_text(prompt)
 
         action = {
@@ -375,7 +385,7 @@ class Orchestrator:
             "model": model,
             "prompt": prompt[:200],
             "prompt_file": str(prompt_file),
-            "save_output_to": str(self.run_dir / f"generator_{task['id']}.md"),
+            "save_output_to": str(task_dir / "output.md"),
             "task_id": task["id"],
         }
 
@@ -389,6 +399,9 @@ class Orchestrator:
         """Build a dispatch_batch action for parallel execution."""
         agents = []
         for task in tasks:
+            task_dir = self._task_dir(task["id"])
+            (task_dir / "task.json").write_text(json.dumps(task, indent=2))
+
             self._store.append({
                 "type": "task_started",
                 "data": {"task_id": task["id"], "title": task.get("description", "")},
@@ -401,14 +414,14 @@ class Orchestrator:
             )
             model = resolve_model("generator", self._config)
 
-            prompt_file = self.run_dir / f"prompt_generator_{task['id']}.md"
+            prompt_file = task_dir / "prompt.md"
             prompt_file.write_text(prompt)
 
             agent = {
                 "role": "generator",
                 "model": model,
                 "prompt_file": str(prompt_file),
-                "save_output_to": str(self.run_dir / f"generator_{task['id']}.md"),
+                "save_output_to": str(task_dir / "output.md"),
                 "task_id": task["id"],
             }
             if should_use_worktree(task.get("description", "")):
@@ -548,7 +561,8 @@ class Orchestrator:
             references_dir=self._references_dir,
         )
 
-        prompt_file = self.run_dir / f"prompt_{role}_{self._current_task_id_for_eval}.md"
+        task_dir = self._task_dir(self._current_task_id_for_eval)
+        prompt_file = task_dir / f"{role}_prompt.md"
         prompt_file.write_text(prompt)
 
         return {
@@ -557,7 +571,7 @@ class Orchestrator:
             "model": model,
             "prompt": prompt[:200],
             "prompt_file": str(prompt_file),
-            "save_output_to": str(self.run_dir / f"{role}_{self._current_task_id_for_eval}.md"),
+            "save_output_to": str(task_dir / f"{role}_output.md"),
             "task_id": self._current_task_id_for_eval,
         }
 
@@ -606,7 +620,8 @@ class Orchestrator:
             return self._dispatch_next_task()
 
         # FAIL — write feedback and retry
-        feedback_path = self.run_dir / "feedback.md"
+        task_dir = self._task_dir(task_id)
+        feedback_path = task_dir / "feedback.md"
         feedback_lines = [f"# Evaluator Feedback for {task_id}\n"]
         for reason in combined["reasons"]:
             feedback_lines.append(f"- {reason}\n")
@@ -749,13 +764,17 @@ class Orchestrator:
         if self._work_plan:
             replacements["{{WORK_PLAN}}"] = json.dumps(self._work_plan.data, indent=2)
         if role in ("adversary", "refiner"):
-            # Load previous output
-            for prev_role in ("architect", "adversary"):
-                for ext in (".json", ".md"):
-                    prev_path = self.run_dir / f"{prev_role}_output{ext}"
-                    if prev_path.exists():
-                        replacements[f"{{{{{prev_role.upper()}_OUTPUT}}}}"] = prev_path.read_text()
-                        break
+            # Load previous outputs from planning/ subdirs
+            planning_dir = self.run_dir / "planning"
+            if planning_dir.exists():
+                for prev_role in ("architect", "adversary"):
+                    for subdir in sorted(planning_dir.iterdir()):
+                        if subdir.is_dir() and subdir.name.endswith(f"-{prev_role}"):
+                            for ext in (".json", ".md"):
+                                output_path = subdir / f"output{ext}"
+                                if output_path.exists():
+                                    replacements[f"{{{{{prev_role.upper()}_OUTPUT}}}}"] = output_path.read_text()
+                                    break
         return replacements
 
     def _compute_context_files(self, task: dict) -> list[str]:
@@ -791,15 +810,15 @@ class Orchestrator:
             "{{DETECTION_JSON}}": json.dumps(self._detection, indent=2),
             "{{CURRENT_TASK}}": self._build_scoped_context(task),
             "{{CONTEXT_FILES}}": context_hint,
-            "{{FEEDBACK}}": self._load_feedback(),
+            "{{FEEDBACK}}": self._load_feedback(task["id"]),
             "{{TEST_COMMAND}}": self._detection.get("test_command", "npm test"),
             "{{TASK_DESCRIPTION}}": task.get("description", ""),
             "{{RUN_DIR}}": str(self.run_dir),
             "{{DISCOVERIES}}": format_discoveries(self.run_dir),
         }
 
-    def _load_feedback(self) -> str:
-        feedback_path = self.run_dir / "feedback.md"
+    def _load_feedback(self, task_id: str) -> str:
+        feedback_path = self.run_dir / "tasks" / task_id / "feedback.md"
         if feedback_path.exists():
             return feedback_path.read_text()
         return ""

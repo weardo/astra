@@ -219,7 +219,7 @@ class TestEvaluatorDispatch:
         # First evaluator failed → skip remaining evaluators, write feedback, retry generator
         assert action["action"] == "dispatch_agent"
         assert action["role"] == "generator"
-        feedback_path = orch.run_dir / "feedback.md"
+        feedback_path = orch.run_dir / "tasks" / "t1" / "feedback.md"
         assert feedback_path.exists()
         assert "test-runner" in feedback_path.read_text()
 
@@ -729,7 +729,7 @@ class TestPromptFileDispatch:
         action = orch.record_hitl(gate="post_plan", decision="continue")
         assert action["role"] == "generator"
         assert "prompt_file" in action
-        assert "generator_t1" in action["prompt_file"]
+        assert "tasks/t1/prompt.md" in action["prompt_file"]
 
     def test_prompt_file_exists_on_disk(self, orch):
         action = orch.init(prompt="Add auth", detection={"stack": "typescript"})
