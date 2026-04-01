@@ -103,9 +103,6 @@ class Orchestrator:
             "data": {"run_id": self.run_dir.name, "prompt": prompt},
         })
 
-        # Write sentinel
-        self._write_sentinel()
-
         # Determine input mode
         if plan_path:
             return self._load_plan_and_start_generator(plan_path)
@@ -196,8 +193,6 @@ class Orchestrator:
         wp_path = self.run_dir / "work_plan.json"
         if wp_path.exists():
             self._work_plan = WorkPlan.load(wp_path)
-
-        self._write_sentinel()
 
         if state["phase"] == "init":
             return {"action": "resume", "phase": "init", "message": "Run initialized but no progress"}
@@ -829,17 +824,5 @@ class Orchestrator:
             return feedback_path.read_text()
         return ""
 
-    def _write_sentinel(self) -> None:
-        if self.project_dir and self.run_dir:
-            sentinel = self.project_dir / ".astra-active-run"
-            sentinel.write_text(str(self.run_dir))
-
-    def _delete_sentinel(self) -> None:
-        if self.project_dir:
-            sentinel = self.project_dir / ".astra-active-run"
-            if sentinel.exists():
-                sentinel.unlink()
-
     def _cleanup(self) -> None:
-        self._delete_sentinel()
         self._store.append({"type": "run_completed", "data": {}})

@@ -62,13 +62,12 @@ class TestOrchestratorInit:
         assert orch.run_dir is not None
         assert orch.run_dir.exists()
 
-    def test_init_writes_sentinel(self, orch, tmp_path):
-        # Set project_dir so sentinel can be written
+    def test_init_no_sentinel_file(self, orch, tmp_path):
         orch.project_dir = tmp_path / "project"
         orch.project_dir.mkdir()
         orch.init(prompt="test", detection={"stack": "python"})
         sentinel = orch.project_dir / ".astra-active-run"
-        assert sentinel.exists()
+        assert not sentinel.exists()
 
 
 class TestOrchestratorPlannerSequence:
@@ -781,28 +780,9 @@ class TestSpecCompliance:
 
 
 class TestOrchestratorCLI:
-    def test_sentinel_file_written(self, orch, tmp_path):
+    def test_no_sentinel_file_on_init(self, orch, tmp_path):
         orch.project_dir = tmp_path / "project"
         orch.project_dir.mkdir()
         orch.init(prompt="test", detection={"stack": "go"})
-        sentinel = orch.project_dir / ".astra-active-run"
-        assert sentinel.exists()
-        assert str(orch.run_dir) in sentinel.read_text()
-
-    def test_sentinel_file_deleted_on_completion(self, orch, tmp_path):
-        orch.project_dir = tmp_path / "project"
-        orch.project_dir.mkdir()
-        orch.init(prompt="test", detection={"stack": "typescript"})
-        # Small plan → architect → validator → hitl → complete
-        work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
-            "stories": [{"id": "s1", "name": "S", "tasks": [
-                {"id": "t1", "description": "X", "acceptance_criteria": ["ac"],
-                 "steps": [], "depends_on": [], "target_files": ["x.ts"],
-                 "status": "pending", "attempts": 0, "blocked_reason": None}
-            ]}]}]}]}
-        orch.record(role="architect", output=json.dumps(work_plan))
-        orch.record(role="validator", output='{"valid": true}')
-        orch.record_hitl(gate="post_plan", decision="continue")
-        orch.record(role="generator", output="done", task_id="t1", verdict="PASS")
         sentinel = orch.project_dir / ".astra-active-run"
         assert not sentinel.exists()
