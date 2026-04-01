@@ -71,7 +71,12 @@ The orchestrator returns multiple independent tasks to run in parallel.
 2. Launch ALL agents simultaneously in a single message with multiple Agent tool calls:
    - For each agent in `action.agents`, dispatch using the same rules as `dispatch_agent` above (including `isolation: "worktree"` when specified)
 3. Collect all outputs
-4. For each completed agent, call `record` sequentially:
+4. **Merge worktree branches back to main.** For each agent that ran with `isolation: "worktree"` and made changes:
+   ```bash
+   git merge --no-ff worktree-<name> -m "Merge parallel task <task_id>"
+   ```
+   These merges should be clean — `auto_fix_deps` ensures parallel tasks touch different files. If a merge conflicts, abort it (`git merge --abort`) and record that task as FAIL.
+5. For each completed agent, call `record` sequentially:
 ```bash
 PYTHONPATH=${CLAUDE_PLUGIN_ROOT} python3 -m src.core record \
   --data-dir .astra \
@@ -81,7 +86,7 @@ PYTHONPATH=${CLAUDE_PLUGIN_ROOT} python3 -m src.core record \
   --task-id "${TASK_ID}" \
   --verdict "${VERDICT}"
 ```
-5. After the last `record`, use the returned action as normal (it may be another `dispatch_batch`, `dispatch_agent`, `hitl_gate`, etc.)
+6. After the last `record`, use the returned action as normal (it may be another `dispatch_batch`, `dispatch_agent`, `hitl_gate`, etc.)
 
 ### If action is `hitl_gate`
 
