@@ -467,6 +467,56 @@ class TestScopedContext:
         assert "src/x.ts" in prompt_content  # from target_files in the task
 
 
+class TestDynamicContext:
+    def _setup_two_task_plan(self, orch):
+        """Set up a plan where t2 depends on t1."""
+        orch.init(prompt="test", detection={"stack": "typescript"})
+        work_plan = {"phases": [{"id": "p0", "name": "P", "epics": [{"id": "e1", "name": "E",
+            "stories": [{"id": "s1", "name": "S", "tasks": [
+                {"id": "t1", "description": "Create auth handler", "acceptance_criteria": ["ac"],
+                 "steps": [], "depends_on": [], "target_files": ["src/auth.ts"],
+                 "status": "pending", "attempts": 0, "blocked_reason": None},
+                {"id": "t2", "description": "Add auth tests", "acceptance_criteria": ["ac"],
+                 "steps": [], "depends_on": ["t1"], "target_files": ["tests/auth.test.ts"],
+                 "status": "pending", "attempts": 0, "blocked_reason": None},
+            ]}]}]}]}
+        orch.record(role="architect", output=json.dumps(work_plan))
+        orch.record(role="validator", output='{"valid": true}')
+        return orch.record_hitl(gate="post_plan", decision="continue")
+
+    def test_context_files_from_completed_dependency(self, orch):
+        """t2 gets t1's target_files as context after t1 completes."""
+        self._setup_two_task_plan(orch)
+        # Complete t1 with FILES_MODIFIED
+        status = "---HARNESS_STATUS---\nSTATUS: COMPLETE\nFILES_MODIFIED: src/auth.ts, src/types.ts\n---END_HARNESS_STATUS---"
+        action = orch.record(role="generator", output=status, task_id="t1", verdict="PASS")
+        # t2's prompt should reference t1's modified files as context
+        prompt_content = Path(action["prompt_file"]).read_text()
+        assert "src/auth.ts" in prompt_content
+        assert "src/types.ts" in prompt_content
+
+    def test_no_context_files_for_root_task(self, orch):
+        """Root task (no deps) gets no context_files."""
+        self._setup_two_task_plan(orch)
+        # t1 has no deps, so _compute_context_files returns empty
+        task = orch._work_plan.get_task("t1")
+        context = orch._compute_context_files(task)
+        assert context == []
+
+    def test_context_excludes_own_target_files(self, orch):
+        """Context files don't include the task's own target_files."""
+        self._setup_two_task_plan(orch)
+        # Complete t1 — its target is src/auth.ts
+        status = "---HARNESS_STATUS---\nSTATUS: COMPLETE\nFILES_MODIFIED: src/auth.ts\n---END_HARNESS_STATUS---"
+        orch.record(role="generator", output=status, task_id="t1", verdict="PASS")
+        # If t2 also targeted src/auth.ts, it should be excluded
+        # But t2 targets tests/auth.test.ts, so src/auth.ts IS context
+        task = orch._work_plan.get_task("t2")
+        context = orch._compute_context_files(task)
+        assert "src/auth.ts" in context
+        assert "tests/auth.test.ts" not in context
+
+
 class TestCircuitBreakerWiring:
     def _setup_and_get_to_generator(self, orch, num_tasks=1):
         orch.init(prompt="test", detection={"stack": "typescript"})

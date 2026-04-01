@@ -7,6 +7,8 @@ You are a coding agent. Implement exactly ONE task from the work plan.
 - **Task:** {{CURRENT_TASK}}
 - **Feedback:** {{FEEDBACK}}
 
+{{CONTEXT_FILES}}
+
 Use Glob/Grep/Read to explore the codebase. Start from `target_files` in your task.
 
 ## Steps

@@ -451,6 +451,9 @@ class Orchestrator:
 
             wp_path = self.run_dir / "work_plan.json"
             task = self._work_plan.get_task(task_id)
+            # Store files_modified on the task for downstream context
+            if status and status.get("FILES_MODIFIED"):
+                task["files_modified"] = status["FILES_MODIFIED"]
             self._work_plan.mark_task_done(task_id, wp_path)
             self._tasks_completed_this_session += 1
             self._store.append({
@@ -755,10 +758,39 @@ class Orchestrator:
                         break
         return replacements
 
+    def _compute_context_files(self, task: dict) -> list[str]:
+        """Dynamically compute files the generator should read before implementing.
+
+        Sources:
+        1. Dependency chain — files_modified by completed dependencies
+        2. target_files that already exist — read before modifying
+        """
+        context = set()
+
+        # Files modified by completed dependencies
+        for dep_id in task.get("depends_on", []):
+            dep = self._work_plan.get_task(dep_id)
+            if dep and dep.get("status") == "done":
+                for f in dep.get("files_modified", []):
+                    context.add(f)
+                # Also include dep's target_files (the declared outputs)
+                for f in dep.get("target_files", []):
+                    context.add(f)
+
+        # Exclude files this task will create/modify (generator will handle those)
+        target = set(task.get("target_files", []))
+        return sorted(context - target)
+
     def _build_generator_replacements(self, task: dict) -> dict:
+        context_files = self._compute_context_files(task)
+        context_hint = ""
+        if context_files:
+            context_hint = "Read these files first for context:\n" + "\n".join(f"- {f}" for f in context_files)
+
         return {
             "{{DETECTION_JSON}}": json.dumps(self._detection, indent=2),
             "{{CURRENT_TASK}}": self._build_scoped_context(task),
+            "{{CONTEXT_FILES}}": context_hint,
             "{{FEEDBACK}}": self._load_feedback(),
             "{{TEST_COMMAND}}": self._detection.get("test_command", "npm test"),
             "{{TASK_DESCRIPTION}}": task.get("description", ""),
