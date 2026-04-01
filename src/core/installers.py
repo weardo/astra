@@ -14,9 +14,17 @@ from pathlib import Path
 from typing import Optional
 
 
+def _normalize_stack(detection: dict) -> str:
+    """Extract stack as a string, handling list or string input."""
+    stack = detection.get("stack", "unknown")
+    if isinstance(stack, list):
+        stack = stack[0] if stack else "unknown"
+    return stack
+
+
 def generate_mcp_json(detection: dict) -> dict:
     """Generate .mcp.json with stack-appropriate MCP servers."""
-    stack = detection.get("stack", "unknown")
+    stack = _normalize_stack(detection)
 
     servers = {}
 
@@ -89,7 +97,7 @@ def install_agents(
     # Placeholder substitution values
     replacements = {
         "{{PROJECT_NAME}}": detection.get("project_name", "project"),
-        "{{STACK}}": detection.get("stack", "unknown"),
+        "{{STACK}}": _normalize_stack(detection),
         "{{TEST_COMMAND}}": detection.get("test_command", ""),
         "{{BUILD_COMMAND}}": detection.get("build_command", ""),
     }
