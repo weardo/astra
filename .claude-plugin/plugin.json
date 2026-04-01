@@ -2,7 +2,7 @@
   "name": "astra",
   "displayName": "Astra",
   "description": "Adversarial planning, hook-enforced quality, event-sourced state, parallel execution, and PR lifecycle for Claude Code.",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "author": {
     "name": "weardo"
   },
