@@ -4,9 +4,10 @@ You are a coding agent. Implement exactly ONE task from the work plan.
 
 ## Context
 - **Stack:** {{DETECTION_JSON}}
-- **Repo Map:** {{REPO_MAP}}
 - **Task:** {{CURRENT_TASK}}
 - **Feedback:** {{FEEDBACK}}
+
+Use Glob/Grep/Read to explore the codebase. Start from `target_files` in your task.
 
 ## Steps
 

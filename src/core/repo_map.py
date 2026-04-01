@@ -656,6 +656,29 @@ def _extract_symbols(filepath: Path) -> list:
     return unique
 
 
+def generate_file_tree(project_dir: Path, max_files: int = 200) -> str:
+    """Generate a compact file tree — paths only, no definitions.
+
+    Much cheaper than generate_repo_map() (~10x fewer tokens).
+    Suitable for architect planning where structure matters more than signatures.
+    """
+    project_dir = Path(project_dir).resolve()
+    files = []
+
+    for root, dirs, filenames in os.walk(project_dir):
+        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
+        for fname in sorted(filenames):
+            fpath = Path(root) / fname
+            if fpath.suffix in INCLUDE_EXTENSIONS:
+                files.append(str(fpath.relative_to(project_dir)))
+
+    if len(files) > max_files:
+        files = files[:max_files]
+        files.append(f"... ({len(files)} more files)")
+
+    return "\n".join(files)
+
+
 def generate_context_prime(
     detection: dict,
     repo_map: str,

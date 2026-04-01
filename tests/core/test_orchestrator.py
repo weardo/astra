@@ -429,9 +429,21 @@ class TestScopedContext:
         assert "t2" in scoped
         assert "Create handler" in scoped
 
-    def test_repo_map_injected_into_prompt(self, orch, tmp_path):
-        """Repo map appears in the generated prompt."""
-        # Create a project dir with a source file
+    def test_file_tree_injected_into_architect_prompt(self, orch, tmp_path):
+        """Architect gets compact file tree (paths only, no definitions)."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / "src").mkdir()
+        (project_dir / "src" / "app.ts").write_text("export function start() {}\n")
+        orch.project_dir = project_dir
+
+        action = orch.init(prompt="test", detection={"stack": "typescript"})
+        # Architect prompt should contain the file path
+        prompt_content = Path(action["prompt_file"]).read_text()
+        assert "app.ts" in prompt_content
+
+    def test_generator_prompt_has_no_repo_map(self, orch, tmp_path):
+        """Generator discovers files with tools — no repo map injected."""
         project_dir = tmp_path / "project"
         project_dir.mkdir()
         (project_dir / "src").mkdir()
@@ -449,9 +461,10 @@ class TestScopedContext:
         orch.record(role="validator", output='{"valid": true}')
         action = orch.record_hitl(gate="post_plan", decision="continue")
 
-        # The generator prompt should contain the repo map with app.ts
         prompt_content = Path(action["prompt_file"]).read_text()
-        assert "app.ts" in prompt_content
+        # Generator should NOT have the repo map, but should have the task
+        assert "app.ts" not in prompt_content
+        assert "src/x.ts" in prompt_content  # from target_files in the task
 
 
 class TestCircuitBreakerWiring:

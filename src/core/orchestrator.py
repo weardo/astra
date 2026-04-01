@@ -33,7 +33,7 @@ from .event_store import EventStore
 from .planner import build_role_prompt, get_role_sequence, resolve_model
 from .pr_lifecycle import build_branch_name, build_pr_description
 from .progress import parse_status_block
-from .repo_map import generate_repo_map
+from .repo_map import generate_file_tree, generate_repo_map
 from .runs import RunManager
 from .work_plan import WorkPlan
 from .worktree import should_use_worktree
@@ -706,14 +706,14 @@ class Orchestrator:
     # Helpers
     # -------------------------------------------------------------------------
 
-    def _get_repo_map(self) -> str:
-        """Generate repo map from project_dir, caching the result."""
-        if not hasattr(self, "_repo_map_cache"):
+    def _get_file_tree(self) -> str:
+        """Compact file tree (paths only) for architect planning."""
+        if not hasattr(self, "_file_tree_cache"):
             if self.project_dir and Path(self.project_dir).exists():
-                self._repo_map_cache = generate_repo_map(self.project_dir)
+                self._file_tree_cache = generate_file_tree(self.project_dir)
             else:
-                self._repo_map_cache = ""
-        return self._repo_map_cache
+                self._file_tree_cache = ""
+        return self._file_tree_cache
 
     def _build_scoped_context(self, task: dict) -> str:
         """Build scoped context: only this task + its dependency chain."""
@@ -740,7 +740,7 @@ class Orchestrator:
     def _build_planner_replacements(self, role: str) -> dict:
         replacements = {
             "{{DETECTION_JSON}}": json.dumps(self._detection, indent=2),
-            "{{REPO_MAP}}": self._get_repo_map(),
+            "{{REPO_MAP}}": self._get_file_tree(),
             "{{USER_PROMPT}}": self._prompt,
         }
         if self._work_plan:
@@ -758,7 +758,6 @@ class Orchestrator:
     def _build_generator_replacements(self, task: dict) -> dict:
         return {
             "{{DETECTION_JSON}}": json.dumps(self._detection, indent=2),
-            "{{REPO_MAP}}": self._get_repo_map(),
             "{{CURRENT_TASK}}": self._build_scoped_context(task),
             "{{FEEDBACK}}": self._load_feedback(),
             "{{TEST_COMMAND}}": self._detection.get("test_command", "npm test"),
