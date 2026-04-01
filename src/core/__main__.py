@@ -59,12 +59,16 @@ def _save_state(data_dir: Path, orch: Orchestrator) -> None:
         state_path.write_text(json.dumps(state, indent=2))
 
 
-def _load_state(data_dir: Path, orch: Orchestrator) -> None:
-    """Restore orchestrator state from the current run's directory."""
-    # Use RunManager's 'current' symlink to find active run
-    from .runs import RunManager
-    rm = RunManager(data_dir)
-    run_dir = rm.get_current()
+def _load_state(data_dir: Path, orch: Orchestrator, run_dir: Path = None) -> None:
+    """Restore orchestrator state from a specific run directory.
+
+    If run_dir is provided, load from it directly (concurrent-safe).
+    Falls back to 'current' symlink only when run_dir is not specified.
+    """
+    if run_dir is None:
+        from .runs import RunManager
+        rm = RunManager(data_dir)
+        run_dir = rm.get_current()
     if run_dir is None:
         return
     state_path = run_dir / STATE_FILE
@@ -127,12 +131,14 @@ def cmd_init(args):
         spec_path=args.spec,
     )
     _save_state(data_dir, orch)
+    action["run_dir"] = str(orch.run_dir)
     print(json.dumps(action))
 
 
 def cmd_record(args):
     orch, data_dir = _make_orchestrator(args.data_dir, args.config)
-    _load_state(data_dir, orch)
+    run_dir = Path(args.run_dir) if args.run_dir else None
+    _load_state(data_dir, orch, run_dir=run_dir)
 
     action = orch.record(
         role=args.role,
@@ -147,7 +153,8 @@ def cmd_record(args):
 
 def cmd_record_hitl(args):
     orch, data_dir = _make_orchestrator(args.data_dir, args.config)
-    _load_state(data_dir, orch)
+    run_dir = Path(args.run_dir) if args.run_dir else None
+    _load_state(data_dir, orch, run_dir=run_dir)
 
     action = orch.record_hitl(
         gate=args.gate,
@@ -192,6 +199,7 @@ def main():
     # record
     p_rec = sub.add_parser("record", help="Record agent output")
     p_rec.add_argument("--data-dir", required=True)
+    p_rec.add_argument("--run-dir", default=None, help="Explicit run directory (concurrent-safe)")
     p_rec.add_argument("--role", required=True)
     p_rec.add_argument("--output", default="")
     p_rec.add_argument("--task-id", default=None)
@@ -202,6 +210,7 @@ def main():
     # record-hitl
     p_hitl = sub.add_parser("record-hitl", help="Record HITL gate decision")
     p_hitl.add_argument("--data-dir", required=True)
+    p_hitl.add_argument("--run-dir", default=None, help="Explicit run directory (concurrent-safe)")
     p_hitl.add_argument("--gate", required=True)
     p_hitl.add_argument("--decision", required=True)
     p_hitl.add_argument("--instructions", default="")

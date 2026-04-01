@@ -32,7 +32,7 @@ PYTHONPATH=${CLAUDE_PLUGIN_ROOT} python3 -m src.core init \
   --spec "${SPEC_PATH}"
 ```
 
-This outputs a JSON action. Parse it.
+This outputs a JSON action. Parse it. **Save `action.run_dir`** — you must pass it to every `record` and `record-hitl` call.
 
 ## Executor Loop
 
@@ -56,6 +56,7 @@ Repeat until `action` is `complete` or `error`:
 ```bash
 PYTHONPATH=${CLAUDE_PLUGIN_ROOT} python3 -m src.core record \
   --data-dir .astra \
+  --run-dir "${RUN_DIR}" \
   --role "${ROLE}" \
   --output "${OUTPUT}" \
   --task-id "${TASK_ID}" \
@@ -74,6 +75,7 @@ The orchestrator returns multiple independent tasks to run in parallel.
 ```bash
 PYTHONPATH=${CLAUDE_PLUGIN_ROOT} python3 -m src.core record \
   --data-dir .astra \
+  --run-dir "${RUN_DIR}" \
   --role "${ROLE}" \
   --output "${OUTPUT}" \
   --task-id "${TASK_ID}" \
@@ -89,6 +91,7 @@ PYTHONPATH=${CLAUDE_PLUGIN_ROOT} python3 -m src.core record \
 ```bash
 PYTHONPATH=${CLAUDE_PLUGIN_ROOT} python3 -m src.core record-hitl \
   --data-dir .astra \
+  --run-dir "${RUN_DIR}" \
   --gate "${GATE}" \
   --decision "${DECISION}" \
   --instructions "${INSTRUCTIONS}"
@@ -109,6 +112,7 @@ Output `action.message`. Stop.
 ## Rules
 
 - NEVER make flow decisions — the orchestrator decides
+- ALWAYS pass `--run-dir` to every `record` and `record-hitl` call
 - ALWAYS use `astra:` prefixed agent types — `astra:architect`, `astra:generator`, `astra:test-runner`, etc. NEVER use agents from other plugins (feature-dev, pr-review-toolkit, superpowers).
 - ALWAYS save agent output to the path specified by the orchestrator
 - ALWAYS pass the full agent output to `record()`
